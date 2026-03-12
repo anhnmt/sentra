@@ -1,0 +1,66 @@
+// internal/detectors/yara/yarax.go
+package yara
+
+import (
+	"context"
+	"fmt"
+
+	yarax "github.com/VirusTotal/yara-x/go"
+
+	"github.com/anhnmt/sentra/internal/core"
+)
+
+type yaraxDetector struct {
+	compiler *yarax.Compiler
+	rules    *yarax.Rules
+}
+
+func newYarax() (*yaraxDetector, error) {
+	compiler, err := yarax.NewCompiler()
+	if err != nil {
+		return nil, fmt.Errorf("yarax: new compiler: %w", err)
+	}
+	return &yaraxDetector{compiler: compiler}, nil
+}
+
+func (d *yaraxDetector) compile(name string, content []byte) error {
+	if err := d.compiler.AddSource(string(content)); err != nil {
+		return fmt.Errorf("yarax: compile %s: %w", name, err)
+	}
+	return nil
+}
+
+func (d *yaraxDetector) build() error {
+	rules := d.compiler.Build()
+	d.rules = rules
+	return nil
+}
+
+func (d *yaraxDetector) scan(ctx context.Context, target string) ([]core.MatchResult, error) {
+	if d.rules == nil {
+		return nil, nil
+	}
+
+	scanner := yarax.NewScanner(d.rules)
+	results, err := scanner.ScanFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("yarax: scan %s: %w", target, err)
+	}
+
+	var all []core.MatchResult
+	for _, m := range results.MatchingRules() {
+		meta := make(map[string]string)
+		for _, kv := range m.Metadata() {
+			meta[kv.Identifier()] = fmt.Sprintf("%v", kv.Value())
+		}
+
+		all = append(all, core.MatchResult{
+			DetectorName: "yarax",
+			RuleName:     m.Identifier(),
+			Target:       target,
+			Metadata:     meta,
+		})
+	}
+
+	return all, nil
+}
