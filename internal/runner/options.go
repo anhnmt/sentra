@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"runtime"
+
 	"github.com/spf13/pflag"
 )
 
@@ -9,6 +11,7 @@ type Options struct {
 	Host     string
 	RulesDir string
 	Target   string
+	Workers  int
 }
 
 func ParseOptions() *Options {
@@ -39,5 +42,6 @@ func NewYaraGroup(opts *Options) *pflag.FlagSet {
 	fs := pflag.NewFlagSet("yara", pflag.ExitOnError)
 	fs.StringVar(&opts.RulesDir, "rules-dir", "signatures/yara", "YARA rules directory")
 	fs.StringVar(&opts.Target, "target", "", "File or directory to scan")
+	fs.IntVar(&opts.Workers, "workers", runtime.NumCPU()*2, "Number of worker goroutines")
 	return fs
 }
