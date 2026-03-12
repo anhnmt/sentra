@@ -3,6 +3,7 @@ package yara
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	yarac "github.com/hillu/go-yara/v4"
 
@@ -10,8 +11,9 @@ import (
 )
 
 type yaracDetector struct {
-	compiler *yarac.Compiler
-	rules    *yarac.Rules
+	compiler    *yarac.Compiler
+	rules       *yarac.Rules
+	scannerPool sync.Pool
 }
 
 func newYarac() (*yaracDetector, error) {
@@ -35,6 +37,18 @@ func (d *yaracDetector) build() error {
 		return fmt.Errorf("yarac: build: %w", err)
 	}
 	d.rules = rules
+
+	// khởi tạo pool sau khi có rules
+	d.scannerPool = sync.Pool{
+		New: func() any {
+			scanner, err := yarac.NewScanner(d.rules)
+			if err != nil {
+				return nil
+			}
+			return scanner
+		},
+	}
+
 	return nil
 }
 
@@ -71,26 +85,20 @@ func (d *yaracDetector) scanMem(ctx context.Context, target string, data []byte)
 		return nil, nil
 	}
 
-	var matches yarac.MatchRules
-	if err := d.rules.ScanMem(data, 0, 0, &matches); err != nil {
+	scanner, ok := d.scannerPool.Get().(*yarac.Scanner)
+	if !ok || scanner == nil {
+		return nil, fmt.Errorf("yarac: failed to get scanner from pool")
+	}
+	defer d.scannerPool.Put(scanner)
+
+	cb := &yaracCallback{target: target}
+	scanner.SetCallback(cb)
+
+	if err := scanner.ScanMem(data); err != nil {
 		return nil, fmt.Errorf("yarac: scanmem %s: %w", target, err)
 	}
 
-	all := make([]core.MatchResult, 0, len(matches))
-	for _, m := range matches {
-		meta := make(map[string]string)
-		for _, kv := range m.Metas {
-			meta[kv.Identifier] = fmt.Sprintf("%v", kv.Value)
-		}
-		all = append(all, core.MatchResult{
-			DetectorName: "yarac",
-			RuleName:     m.Rule,
-			Target:       target,
-			Metadata:     meta,
-		})
-	}
-
-	return all, nil
+	return cb.results, nil
 }
 
 func (d *yaracDetector) close() {
@@ -102,4 +110,25 @@ func (d *yaracDetector) close() {
 		d.compiler.Destroy()
 		d.compiler = nil
 	}
+}
+
+type yaracCallback struct {
+	target  string
+	results []core.MatchResult
+}
+
+func (c *yaracCallback) RuleMatching(_ *yarac.ScanContext, r *yarac.Rule) (bool, error) {
+	meta := make(map[string]string)
+	for _, kv := range r.Metas() {
+		meta[kv.Identifier] = fmt.Sprintf("%v", kv.Value)
+	}
+
+	c.results = append(c.results, core.MatchResult{
+		DetectorName: "yarac",
+		RuleName:     r.Identifier(),
+		Target:       c.target,
+		Metadata:     meta,
+	})
+
+	return true, nil // true = tiếp tục scan
 }

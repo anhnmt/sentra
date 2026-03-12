@@ -1,9 +1,9 @@
-// internal/detectors/yara/yarax.go
 package yara
 
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	yarax "github.com/VirusTotal/yara-x/go"
 
@@ -11,8 +11,9 @@ import (
 )
 
 type yaraxDetector struct {
-	compiler *yarax.Compiler
-	rules    *yarax.Rules
+	compiler    *yarax.Compiler
+	rules       *yarax.Rules
+	scannerPool sync.Pool
 }
 
 func newYarax() (*yaraxDetector, error) {
@@ -33,6 +34,15 @@ func (d *yaraxDetector) compile(name string, content []byte) error {
 func (d *yaraxDetector) build() error {
 	rules := d.compiler.Build()
 	d.rules = rules
+
+	// khởi tạo pool sau khi có rules
+	d.scannerPool = sync.Pool{
+		New: func() any {
+			scanner := yarax.NewScanner(d.rules)
+			return scanner
+		},
+	}
+
 	return nil
 }
 
@@ -70,7 +80,11 @@ func (d *yaraxDetector) scanMem(ctx context.Context, target string, data []byte)
 		return nil, nil
 	}
 
-	scanner := yarax.NewScanner(d.rules)
+	scanner, ok := d.scannerPool.Get().(*yarax.Scanner)
+	if !ok || scanner == nil {
+		return nil, fmt.Errorf("yarax: failed to get scanner from pool")
+	}
+	defer d.scannerPool.Put(scanner) // trả về pool sau khi dùng xong
 
 	results, err := scanner.Scan(data)
 	if err != nil {
