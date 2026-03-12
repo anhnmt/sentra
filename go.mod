@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/VirusTotal/yara-x/go v1.14.0
+	github.com/charlievieth/fastwalk v1.0.14
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/hillu/go-yara/v4 v4.3.4
 	github.com/panjf2000/ants/v2 v2.11.6

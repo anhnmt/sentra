@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"sync"
+
+	"github.com/charlievieth/fastwalk"
 
 	"github.com/anhnmt/sentra/internal/core"
 	"github.com/anhnmt/sentra/internal/detectors/yara"
@@ -77,12 +78,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	// walk goroutine — không block main
 	var walkErr error
 	go func() {
-		walkErr = filepath.WalkDir(r.opts.Target, func(path string, d os.DirEntry, err error) error {
+		walkErr = fastwalk.Walk(&fastwalk.Config{
+			Follow: false, // không follow symlink
+		}, r.opts.Target, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() && path == r.opts.RulesDir {
-				return filepath.SkipDir
+				return fastwalk.SkipDir
 			}
 			if d.Type() != 0 {
 				return nil

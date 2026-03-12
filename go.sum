@@ -1,5 +1,7 @@
 github.com/VirusTotal/yara-x/go v1.14.0 h1:B8JDAVDN7TmzU2T1uVTMiMgpNIb1Lt4UZVePfFgthqs=
 github.com/VirusTotal/yara-x/go v1.14.0/go.mod h1:lgXP/nkYX349MVowrtTtU5hzMdCOWQLv3+wKll9+0F8=
+github.com/charlievieth/fastwalk v1.0.14 h1:3Eh5uaFGwHZd8EGwTjJnSpBkfwfsak9h6ICgnWlhAyg=
+github.com/charlievieth/fastwalk v1.0.14/go.mod h1:diVcUreiU1aQ4/Wu3NbxxH4/KYdKpLDojrQ1Bb2KgNY=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/edsrzf/mmap-go v1.2.0 h1:hXLYlkbaPzt1SaQk+anYwKSRNhufIDCchSPkUD6dD84=
