@@ -65,6 +65,35 @@ func (d *yaraxDetector) scan(ctx context.Context, target string) ([]core.MatchRe
 	return all, nil
 }
 
+func (d *yaraxDetector) scanMem(ctx context.Context, target string, data []byte) ([]core.MatchResult, error) {
+	if d.rules == nil {
+		return nil, nil
+	}
+
+	scanner := yarax.NewScanner(d.rules)
+
+	results, err := scanner.Scan(data)
+	if err != nil {
+		return nil, fmt.Errorf("yarax: scanmem %s: %w", target, err)
+	}
+
+	var all []core.MatchResult
+	for _, m := range results.MatchingRules() {
+		meta := make(map[string]string)
+		for _, kv := range m.Metadata() {
+			meta[kv.Identifier()] = fmt.Sprintf("%v", kv.Value())
+		}
+		all = append(all, core.MatchResult{
+			DetectorName: "yarax",
+			RuleName:     m.Identifier(),
+			Target:       target,
+			Metadata:     meta,
+		})
+	}
+
+	return all, nil
+}
+
 func (d *yaraxDetector) close() {
 	if d.rules != nil {
 		d.rules.Destroy()
