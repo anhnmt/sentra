@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/anhnmt/sentra/internal/core"
 	"github.com/anhnmt/sentra/internal/detectors/yara"
 )
 
@@ -32,9 +35,41 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("--target is required")
 	}
 
-	results, err := r.detector.Scan(ctx, r.opts.Target)
+	defer r.detector.Close()
+
+	var results []core.MatchResult
+
+	err := filepath.WalkDir(r.opts.Target, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// skip signatures directory
+		if d.IsDir() && path == r.opts.RulesDir {
+			return filepath.SkipDir
+		}
+
+		// only scan regular file, skip symlink/dir
+		if d.Type() != 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		matches, err := r.detector.Scan(ctx, path)
+		if err != nil {
+			return fmt.Errorf("scan %s: %w", path, err)
+		}
+
+		results = append(results, matches...)
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("scan: %w", err)
+		return fmt.Errorf("walk %s: %w", r.opts.Target, err)
 	}
 
 	out, _ := json.MarshalIndent(results, "", "  ")
