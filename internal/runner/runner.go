@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"sync"
 
 	"github.com/charlievieth/fastwalk"
@@ -51,35 +52,42 @@ func (r *Runner) Run(ctx context.Context) error {
 		err     error
 	}
 
-	ch := make(chan result, r.opts.Workers) // buffered = số worker
+	ch := make(chan result, r.opts.Workers)
 	var wg sync.WaitGroup
 
+	// stream writer — JSON encode từng result ngay khi có
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+
 	var (
-		all  []core.MatchResult
 		errs []error
 		mu   sync.Mutex
 		done = make(chan struct{})
 	)
 
-	// collector goroutine
+	// collector + streamer goroutine
 	go func() {
 		defer close(done)
 		for r := range ch {
-			mu.Lock()
 			if r.err != nil {
+				mu.Lock()
 				errs = append(errs, r.err)
-			} else {
-				all = append(all, r.matches...)
+				mu.Unlock()
+				continue
 			}
-			mu.Unlock()
+
+			for _, match := range r.matches {
+				mu.Lock()
+				_ = encoder.Encode(match)
+				mu.Unlock()
+			}
 		}
 	}()
 
-	// walk goroutine — không block main
 	var walkErr error
 	go func() {
 		walkErr = fastwalk.Walk(&fastwalk.Config{
-			Follow: false, // không follow symlink
+			Follow: false,
 		}, r.opts.Target, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -110,12 +118,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 		})
 
-		// walk xong → chờ worker → close channel
 		wg.Wait()
 		close(ch)
 	}()
 
-	// chờ collector xong
 	<-done
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
@@ -125,9 +131,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("scan errors: %v", errs)
 	}
-
-	out, _ := json.MarshalIndent(all, "", "  ")
-	fmt.Println(string(out))
 
 	return nil
 }
