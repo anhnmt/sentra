@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os/signal"
 	"syscall"
 
+	"github.com/rs/zerolog/log"
 	_ "go.uber.org/automaxprocs"
 
+	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/runner"
 )
 
@@ -23,6 +24,7 @@ const BANNER = `
 
 func init() {
 	fmt.Printf("%s\n", BANNER)
+	logger.Init()
 
 }
 
@@ -31,7 +33,7 @@ func main() {
 
 	runner, err := runner.New(opts)
 	if err != nil {
-		log.Fatalf("Failed to create runner: %v", err)
+		log.Info().Msgf("Failed to create runner: %v", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -40,13 +42,13 @@ func main() {
 	go func() {
 		defer cancel()
 		if err := runner.Run(ctx); err != nil {
-			log.Fatalf("Runner error: %v", err)
+			log.Fatal().Msgf("Runner error: %v", err)
 		}
 	}()
 
 	// Graceful shutdown
 	<-ctx.Done()
-	fmt.Println("\nShutting down...")
+	log.Info().Msgf("\nShutting down...")
 
 	runner.Close()
 }

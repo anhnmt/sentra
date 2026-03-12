@@ -1,16 +1,17 @@
 package runner
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/charlievieth/fastwalk"
+	"github.com/rs/zerolog/log"
 
 	"github.com/anhnmt/sentra/internal/core"
 	"github.com/anhnmt/sentra/internal/detectors/yara"
@@ -56,26 +57,27 @@ func (r *Runner) Run(ctx context.Context) error {
 	ch := make(chan result, r.opts.Workers)
 	var wg sync.WaitGroup
 
-	// stream writer — JSON encode từng result ngay khi có
-	buf := bufio.NewWriterSize(os.Stdout, 64*1024)
-	defer buf.Flush()
-
-	encoder := sonic.ConfigDefault.NewEncoder(buf)
-	encoder.SetIndent("", "  ")
-
 	var (
 		errs []error
 		mu   sync.Mutex
 		done = make(chan struct{})
 	)
 
-	// collector + streamer goroutine
+	log.Info().
+		Str("target", r.opts.Target).
+		Str("rules_dir", r.opts.RulesDir).
+		Int("workers", r.opts.Workers).
+		Msg("scan starting")
+
+	start := time.Now()
+	var fileCount atomic.Int64
+
 	go func() {
 		defer close(done)
 		for r := range ch {
 			if r.err != nil {
 				if errors.Is(r.err, os.ErrPermission) {
-					continue // skip permission error
+					continue
 				}
 				mu.Lock()
 				errs = append(errs, r.err)
@@ -84,9 +86,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 
 			for _, match := range r.matches {
-				mu.Lock()
-				_ = encoder.Encode(match)
-				mu.Unlock()
+				log.Warn().
+					Str("detector", match.DetectorName).
+					Str("rule", match.RuleName).
+					Str("file", match.Target).
+					// Any("metadata", match.Metadata).
+					Msg("match detected")
 			}
 		}
 	}()
@@ -115,6 +120,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			default:
 			}
 
+			fileCount.Add(1)
 			wg.Add(1)
 			if err := r.pool.Submit(func() {
 				defer wg.Done()
@@ -134,6 +140,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	<-done
 
+	log.Info().
+		Int64("files", fileCount.Load()).
+		Int("errors", len(errs)).
+		Dur("duration", time.Since(start)).
+		Msg("scan complete")
+
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 		return fmt.Errorf("walk %s: %w", r.opts.Target, walkErr)
 	}
@@ -149,5 +161,5 @@ func (r *Runner) Close() {
 	r.pool.Close()
 	r.detector.Close()
 
-	fmt.Println("Goodbye!")
+	log.Info().Msg("Goodbye!")
 }
