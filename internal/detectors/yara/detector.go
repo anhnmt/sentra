@@ -77,6 +77,10 @@ func (d *YaraDetector) Name() string {
 }
 
 func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchResult, error) {
+	if !isEligible(target) {
+		return nil, nil
+	}
+
 	f, err := os.Open(target)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", target, err)
