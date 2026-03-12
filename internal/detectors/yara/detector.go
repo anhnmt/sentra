@@ -2,6 +2,7 @@ package yara
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -49,6 +50,9 @@ func New(rulesDir string) (*YaraDetector, error) {
 
 		f, err := os.Open(path)
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return nil // skip permission error
+			}
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 		defer f.Close()
@@ -92,6 +96,9 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 
 	f, err := os.Open(target)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, nil // skip, không phải lỗi
+		}
 		return nil, fmt.Errorf("open %s: %w", target, err)
 	}
 	defer f.Close()

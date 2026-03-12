@@ -74,6 +74,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer close(done)
 		for r := range ch {
 			if r.err != nil {
+				if errors.Is(r.err, os.ErrPermission) {
+					continue // skip permission error
+				}
 				mu.Lock()
 				errs = append(errs, r.err)
 				mu.Unlock()
@@ -94,6 +97,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			Follow: false,
 		}, r.opts.Target, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					return nil
+				}
 				return err
 			}
 			if d.IsDir() && path == r.opts.RulesDir {
