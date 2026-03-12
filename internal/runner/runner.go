@@ -1,14 +1,15 @@
 package runner
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"sync"
 
+	"github.com/bytedance/sonic"
 	"github.com/charlievieth/fastwalk"
 
 	"github.com/anhnmt/sentra/internal/core"
@@ -56,7 +57,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 
 	// stream writer — JSON encode từng result ngay khi có
-	encoder := json.NewEncoder(os.Stdout)
+	buf := bufio.NewWriterSize(os.Stdout, 64*1024)
+	defer buf.Flush()
+
+	encoder := sonic.ConfigDefault.NewEncoder(buf)
 	encoder.SetIndent("", "  ")
 
 	var (
