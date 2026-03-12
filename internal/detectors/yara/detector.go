@@ -3,10 +3,12 @@ package yara
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/charlievieth/fastwalk"
 	"github.com/edsrzf/mmap-go"
 
 	"github.com/anhnmt/sentra/internal/core"
@@ -35,7 +37,9 @@ func New(rulesDir string) (*YaraDetector, error) {
 		return nil, err
 	}
 
-	err = filepath.WalkDir(rulesDir, func(path string, d os.DirEntry, err error) error {
+	err = fastwalk.Walk(&fastwalk.Config{
+		Follow: false,
+	}, rulesDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -43,19 +47,24 @@ func New(rulesDir string) (*YaraDetector, error) {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
+		f, err := os.Open(path)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
+			return fmt.Errorf("open %s: %w", path, err)
 		}
+		defer f.Close()
+
+		data, err := mmap.Map(f, mmap.RDONLY, 0)
+		if err != nil {
+			return fmt.Errorf("mmap %s: %w", path, err)
+		}
+		defer data.Unmap()
 
 		name := filepath.Base(path)
-		if err := yarax.compile(name, content); err != nil {
-			if err := yarac.compile(name, content); err != nil {
-				return fmt.Errorf("compile %s: %w", name, err)
-			}
+		if err := yarax.compile(name, data); err == nil {
+			return nil
 		}
 
-		return nil
+		return yarac.compile(name, data)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", rulesDir, err)

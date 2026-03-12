@@ -1,4 +1,3 @@
-// internal/detectors/yara/yarac.go
 package yara
 
 import (
