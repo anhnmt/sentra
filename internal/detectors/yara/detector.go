@@ -14,6 +14,7 @@ type yara interface {
 	compile(name string, content []byte) error
 	build() error
 	scan(ctx context.Context, target string) ([]core.MatchResult, error)
+	close()
 }
 
 type YaraDetector struct {
@@ -111,4 +112,10 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 	}
 
 	return all, nil
+}
+
+func (d *YaraDetector) Close() {
+	for _, b := range d.backends {
+		b.close()
+	}
 }

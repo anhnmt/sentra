@@ -44,5 +44,6 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) Close() {
+	r.detector.Close()
 	fmt.Println("Goodbye!")
 }

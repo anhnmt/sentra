@@ -38,6 +38,7 @@ func main() {
 	defer cancel()
 
 	go func() {
+		defer cancel()
 		if err := runner.Run(ctx); err != nil {
 			log.Fatalf("Runner error: %v", err)
 		}

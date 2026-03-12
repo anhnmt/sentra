@@ -66,3 +66,14 @@ func (d *yaracDetector) scan(ctx context.Context, target string) ([]core.MatchRe
 
 	return all, nil
 }
+
+func (d *yaracDetector) close() {
+	if d.rules != nil {
+		d.rules.Destroy()
+		d.rules = nil
+	}
+	if d.compiler != nil {
+		d.compiler.Destroy()
+		d.compiler = nil
+	}
+}
