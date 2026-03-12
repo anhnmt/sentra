@@ -51,5 +51,8 @@ config.yaml
 # signatures
 signatures/
 
+# samples
+samples/
+
 sentra
 sentra*
