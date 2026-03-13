@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/anhnmt/sentra/internal/core"
 	"github.com/anhnmt/sentra/internal/detectors/yara"
+	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/progress"
 	"github.com/anhnmt/sentra/internal/worker"
 )
@@ -44,6 +46,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("--target is required")
 	}
 
+	if abs, err := filepath.Abs(r.opts.Target); err == nil {
+		r.opts.Target = abs
+	}
+
 	log.Info().
 		Str("target", r.opts.Target).
 		Str("rules_dir", r.opts.RulesDir).
@@ -53,6 +59,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	bar := progress.New(progress.Options{
 		Workers: r.opts.Workers,
 	})
+
+	// redirect zerolog vào mpb — bar luôn ở dưới cùng
+	logger.InitWithWriter(bar.Writer)
 
 	type result struct {
 		matches []core.MatchResult

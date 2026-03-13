@@ -12,6 +12,7 @@ import (
 type Bar struct {
 	bar      *mpb.Bar
 	progress *mpb.Progress
+	Writer   io.Writer // zerolog ghi vào đây thay vì os.Stdout
 }
 
 type Options struct {
@@ -49,7 +50,11 @@ func New(opts Options) *Bar {
 		mpb.BarRemoveOnComplete(),
 	)
 
-	return &Bar{bar: bar, progress: p}
+	return &Bar{
+		bar:      bar,
+		progress: p,
+		Writer:   p, // mpb.Progress implement io.Writer, tự xử lý clear/redraw
+	}
 }
 
 func (b *Bar) Increment(n int64) {
@@ -62,8 +67,6 @@ func (b *Bar) Done(total int64) {
 	b.progress.Wait()
 }
 
-// NewDownloadBar tạo bar cho download với total size biết trước.
-// Trả về proxy reader wrap quanh r để tự động update progress khi đọc.
 func NewDownloadBar(r io.Reader, total int64, name string) (io.ReadCloser, func()) {
 	p := mpb.New(
 		mpb.WithWidth(50),
@@ -86,7 +89,6 @@ func NewDownloadBar(r io.Reader, total int64, name string) (io.ReadCloser, func(
 	)
 
 	proxy := bar.ProxyReader(r)
-
 	wait := func() {
 		time.Sleep(200 * time.Millisecond)
 		p.Wait()

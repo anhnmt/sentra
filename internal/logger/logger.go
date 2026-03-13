@@ -3,6 +3,7 @@ package logger
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -17,14 +18,23 @@ var systemFields = map[string]bool{
 	zerolog.CallerFieldName:    true,
 }
 
+// Init khởi tạo logger mặc định ra os.Stdout
 func Init() {
+	initWithWriter(os.Stdout)
+}
+
+// InitWithWriter cho phép inject writer — dùng khi cần mix với progress bar
+func InitWithWriter(w io.Writer) {
+	initWithWriter(w)
+}
+
+func initWithWriter(w io.Writer) {
 	zerolog.TimeFieldFormat = time.RFC3339
 
-	// Capture extra fields before ConsoleWriter touches them
 	var capturedExtra []struct{ k, v string }
 
 	log.Logger = zerolog.New(zerolog.ConsoleWriter{
-		Out:        os.Stdout,
+		Out:        w,
 		TimeFormat: time.RFC3339,
 		PartsOrder: []string{
 			zerolog.TimestampFieldName,
@@ -39,13 +49,12 @@ func Init() {
 						k: k,
 						v: fmt.Sprintf("%v", v),
 					})
-					// Remove so ConsoleWriter won't auto-append to message line
 					delete(fields, k)
 				}
 			}
 			return nil
 		},
-		FormatExtra: func(fields map[string]interface{}, buf *bytes.Buffer) error {
+		FormatExtra: func(_ map[string]interface{}, buf *bytes.Buffer) error {
 			if len(capturedExtra) == 0 {
 				return nil
 			}
