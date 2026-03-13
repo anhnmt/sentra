@@ -39,7 +39,7 @@ func main() {
 			log.Fatal().Msgf("UpdateSignatures error: %v", err)
 			return
 		}
-		log.Info().Msgf("\nShutting down...")
+		log.Info().Msgf("Shutting down...")
 		os.Exit(1)
 	}
 
@@ -60,7 +60,7 @@ func main() {
 
 	// Graceful shutdown
 	<-ctx.Done()
-	log.Info().Msgf("\nShutting down...")
+	log.Info().Msgf("Shutting down...")
 
 	runner.Close()
 }
