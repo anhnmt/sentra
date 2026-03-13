@@ -2,6 +2,7 @@ package progress
 
 import (
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -55,9 +56,41 @@ func (b *Bar) Increment(n int64) {
 	b.bar.SetCurrent(n)
 }
 
-// Done đánh dấu bar hoàn thành và đợi render frame cuối
 func (b *Bar) Done(total int64) {
 	b.bar.SetTotal(total, true)
 	time.Sleep(200 * time.Millisecond)
 	b.progress.Wait()
+}
+
+// NewDownloadBar tạo bar cho download với total size biết trước.
+// Trả về proxy reader wrap quanh r để tự động update progress khi đọc.
+func NewDownloadBar(r io.Reader, total int64, name string) (io.ReadCloser, func()) {
+	p := mpb.New(
+		mpb.WithWidth(50),
+		mpb.WithRefreshRate(100*time.Millisecond),
+	)
+
+	bar := p.New(
+		total,
+		mpb.BarStyle().Lbound("  [").Filler("█").Tip("█").Padding("░").Rbound("]"),
+		mpb.PrependDecorators(
+			decor.Name(name+"  "),
+		),
+		mpb.AppendDecorators(
+			decor.CountersKibiByte("  %6.1f / %6.1f  "),
+			decor.Percentage(decor.WC{W: 6}),
+			decor.Name("  "),
+			decor.EwmaSpeed(decor.SizeB1024(0), "% .2f", 30),
+		),
+		mpb.BarFillerOnComplete("✓ downloaded"),
+	)
+
+	proxy := bar.ProxyReader(r)
+
+	wait := func() {
+		time.Sleep(200 * time.Millisecond)
+		p.Wait()
+	}
+
+	return proxy, wait
 }
