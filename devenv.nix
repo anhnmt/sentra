@@ -35,24 +35,56 @@
 		go mod tidy
   '';
 
-  scripts.build-arm.exec = ''
-		CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-		GOMAXPROCS=$(nproc) \
-    go build \
-      -trimpath \
-      -ldflags "-extldflags '-static'" \
-      -buildvcs=false \
-      -o sentra
+  scripts.build-linux-amd64.exec = ''
+    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    GOMAXPROCS=$(nproc) \
+      go build \
+        -trimpath \
+        -buildvcs=false \
+        -o sentra-linux-amd64 \
+        ./cmd/sentra
   '';
 
-  scripts.build-amd.exec = ''
-		CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-		GOMAXPROCS=$(nproc) \
-    go build \
-      -trimpath \
-      -ldflags "-extldflags '-static'" \
-      -buildvcs=false \
-      -o sentra
+  scripts.build-linux-arm64.exec = ''
+    CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
+    GOMAXPROCS=$(nproc) \
+      go build \
+        -trimpath \
+        -ldflags "-extldflags '-static'" \
+        -buildvcs=false \
+        -o sentra-linux-arm64 \
+        ./cmd/sentra
+  '';
+
+  scripts.build-darwin-amd64.exec = ''
+    CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
+    GOMAXPROCS=$(nproc) \
+      go build \
+        -trimpath \
+        -ldflags "-extldflags '-static'" \
+        -buildvcs=false \
+        -o sentra-macos-amd64 \
+        ./cmd/sentra
+  '';
+
+  scripts.build-darwin-arm64.exec = ''
+    CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+    GOMAXPROCS=$(nproc) \
+      go build \
+        -trimpath \
+        -ldflags "-extldflags '-static'" \
+        -buildvcs=false \
+        -o sentra-macos-arm64 \
+        ./cmd/sentra
+  '';
+
+  scripts.build-all.exec = ''
+    set -e
+    build-linux-amd64
+    build-linux-arm64
+    build-darwin-amd64
+    build-darwin-arm64
+    echo "✓ All builds complete"
   '';
 
   # https://devenv.sh/basics/
