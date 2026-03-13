@@ -7,38 +7,30 @@ import (
 )
 
 type Options struct {
-	Name     string
-	Host     string
-	RulesDir string
-	Target   string
-	Workers  int
+	UpdateSignatures bool
+	RulesDir         string
+	Target           string
+	Workers          int
 }
 
 func ParseOptions() *Options {
 	opts := &Options{}
 
 	NewGroups(pflag.CommandLine).
-		Add("Database", NewDatabaseGroup(opts)).
-		Add("Server", NewServerGroup(opts)).
-		Add("Yara", NewYaraGroup(opts)).
+		Add("Scan options", NewScanOptionsGroup(opts)).
+		Add("Util", NewUtilGroup(opts)).
 		Parse()
 
 	return opts
 }
 
-func NewDatabaseGroup(opts *Options) *pflag.FlagSet {
-	fs := pflag.NewFlagSet("database", pflag.ExitOnError)
-	fs.StringVar(&opts.Name, "name", "world", "Database host")
+func NewUtilGroup(opts *Options) *pflag.FlagSet {
+	fs := pflag.NewFlagSet("util", pflag.ExitOnError)
+	fs.BoolVar(&opts.UpdateSignatures, "update-signatures", false, "Update latest signatures")
 	return fs
 }
 
-func NewServerGroup(opts *Options) *pflag.FlagSet {
-	fs := pflag.NewFlagSet("server", pflag.ExitOnError)
-	fs.StringVar(&opts.Host, "host", "0.0.0.0", "Server host")
-	return fs
-}
-
-func NewYaraGroup(opts *Options) *pflag.FlagSet {
+func NewScanOptionsGroup(opts *Options) *pflag.FlagSet {
 	fs := pflag.NewFlagSet("yara", pflag.ExitOnError)
 	fs.StringVar(&opts.RulesDir, "rules-dir", "signatures/yara", "YARA rules directory")
 	fs.StringVar(&opts.Target, "target", "", "File or directory to scan")

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/runner"
+	"github.com/anhnmt/sentra/internal/util"
 )
 
 const BANNER = `
@@ -30,6 +32,16 @@ func init() {
 
 func main() {
 	opts := runner.ParseOptions()
+
+	if opts.UpdateSignatures {
+		err := util.UpdateSignatures()
+		if err != nil {
+			log.Fatal().Msgf("UpdateSignatures error: %v", err)
+			return
+		}
+		log.Info().Msgf("\nShutting down...")
+		os.Exit(1)
+	}
 
 	runner, err := runner.New(opts)
 	if err != nil {
