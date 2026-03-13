@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/charlievieth/fastwalk"
@@ -24,13 +25,14 @@ type yara interface {
 }
 
 type YaraDetector struct {
-	backends []yara
+	backends    []yara
+	absRulesDir string
 }
 
 func New(rulesDir string) (*YaraDetector, error) {
-	yarac, err := newYarac()
+	absRulesDir, err := filepath.Abs(rulesDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve rules dir: %w", err)
 	}
 
 	yarax, err := newYarax()
@@ -38,40 +40,13 @@ func New(rulesDir string) (*YaraDetector, error) {
 		return nil, err
 	}
 
-	err = fastwalk.Walk(&fastwalk.Config{
-		Follow: false,
-	}, rulesDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || filepath.Ext(path) != ".yar" {
-			return nil
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			if errors.Is(err, os.ErrPermission) {
-				return nil // skip permission error
-			}
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		defer f.Close()
-
-		data, err := mmap.Map(f, mmap.RDONLY, 0)
-		if err != nil {
-			return fmt.Errorf("mmap %s: %w", path, err)
-		}
-		defer data.Unmap()
-
-		name := filepath.Base(path)
-		if err := yarax.compile(name, data); err == nil {
-			return nil
-		}
-
-		return yarac.compile(name, data)
-	})
+	yarac, err := newYarac()
 	if err != nil {
-		return nil, fmt.Errorf("walk %s: %w", rulesDir, err)
+		return nil, err
+	}
+
+	if err := loadRules(rulesDir, yarax, yarac); err != nil {
+		return nil, err
 	}
 
 	for _, b := range []yara{yarax, yarac} {
@@ -81,23 +56,62 @@ func New(rulesDir string) (*YaraDetector, error) {
 	}
 
 	return &YaraDetector{
-		backends: []yara{yarax, yarac},
+		backends:    []yara{yarax, yarac},
+		absRulesDir: absRulesDir,
 	}, nil
 }
 
-func (d *YaraDetector) Name() string {
-	return "yara"
+func loadRules(rulesDir string, yarax, yarac yara) error {
+	return fastwalk.Walk(&fastwalk.Config{Follow: false}, rulesDir,
+		func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(path) != ".yar" {
+				return err
+			}
+			return compileRule(path, yarax, yarac)
+		},
+	)
+}
+
+func compileRule(path string, yarax, yarac yara) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil
+		}
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	data, err := mmap.Map(f, mmap.RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("mmap %s: %w", path, err)
+	}
+	defer data.Unmap()
+
+	name := filepath.Base(path)
+	if err := yarax.compile(name, data); err == nil {
+		return nil
+	}
+	return yarac.compile(name, data)
+}
+
+func (d *YaraDetector) Name() string { return "yara" }
+
+func (d *YaraDetector) Close() {
+	for _, b := range d.backends {
+		b.close()
+	}
 }
 
 func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchResult, error) {
-	if !isEligible(target) {
+	if d.isRulesPath(target) || !isEligible(target) {
 		return nil, nil
 	}
 
 	f, err := os.Open(target)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return nil, nil // skip, không phải lỗi
+			return nil, nil
 		}
 		return nil, fmt.Errorf("open %s: %w", target, err)
 	}
@@ -105,11 +119,14 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 
 	data, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
-		// fallback sang ScanFile nếu mmap thất bại
-		return d.scanFile(ctx, target)
+		return d.runBackends(ctx, target, nil)
 	}
 	defer data.Unmap()
 
+	return d.runBackends(ctx, target, data)
+}
+
+func (d *YaraDetector) runBackends(ctx context.Context, target string, data mmap.MMap) ([]core.MatchResult, error) {
 	type result struct {
 		matches []core.MatchResult
 		err     error
@@ -122,78 +139,42 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 		wg.Add(1)
 		go func(b yara) {
 			defer wg.Done()
-			matches, err := b.scanMem(ctx, target, data)
-			ch <- result{matches, err}
+			var m []core.MatchResult
+			var err error
+			if data != nil {
+				m, err = b.scanMem(ctx, target, data)
+			} else {
+				m, err = b.scan(ctx, target)
+			}
+			ch <- result{m, err}
 		}(b)
 	}
 
 	wg.Wait()
 	close(ch)
 
-	var (
-		all  []core.MatchResult
-		errs []error
-	)
+	var all []core.MatchResult
+	var errCount int
 
 	for r := range ch {
 		if r.err != nil {
-			errs = append(errs, r.err)
+			errCount++
 			continue
 		}
 		all = append(all, r.matches...)
 	}
 
-	if len(errs) == len(d.backends) {
-		return nil, fmt.Errorf("yara: all backends failed: %v", errs)
+	if errCount == len(d.backends) {
+		return nil, fmt.Errorf("yara: all backends failed")
 	}
-
 	return all, nil
 }
 
-// fallback nếu mmap thất bại
-func (d *YaraDetector) scanFile(ctx context.Context, target string) ([]core.MatchResult, error) {
-	type result struct {
-		matches []core.MatchResult
-		err     error
+func (d *YaraDetector) isRulesPath(target string) bool {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return false
 	}
-
-	ch := make(chan result, len(d.backends))
-	var wg sync.WaitGroup
-
-	for _, b := range d.backends {
-		wg.Add(1)
-		go func(b yara) {
-			defer wg.Done()
-			matches, err := b.scan(ctx, target)
-			ch <- result{matches, err}
-		}(b)
-	}
-
-	wg.Wait()
-	close(ch)
-
-	var (
-		all  []core.MatchResult
-		errs []error
-	)
-
-	for r := range ch {
-		if r.err != nil {
-			errs = append(errs, r.err)
-			continue
-		}
-		all = append(all, r.matches...)
-	}
-
-	if len(errs) == len(d.backends) {
-		return nil, fmt.Errorf("yara: all backends failed: %v", errs)
-	}
-
-	return all, nil
-}
-
-func (d *YaraDetector) Close() {
-	for _, b := range d.backends {
-		b.close()
-	}
+	return abs == d.absRulesDir ||
+		strings.HasPrefix(abs, d.absRulesDir+string(os.PathSeparator))
 }
