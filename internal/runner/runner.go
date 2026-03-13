@@ -90,7 +90,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					Str("detector", match.DetectorName).
 					Str("rule", match.RuleName).
 					Str("file", match.Target).
-					// Any("metadata", match.Metadata).
+					Fields(match.Metadata).
 					Msg("match detected")
 			}
 		}

@@ -6,7 +6,7 @@ type MatchResult struct {
 	DetectorName string
 	RuleName     string
 	Target       string
-	Metadata     map[string]string
+	Metadata     map[string]interface{}
 }
 
 type Detector interface {

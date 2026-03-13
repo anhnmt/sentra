@@ -64,9 +64,9 @@ func (d *yaracDetector) scan(ctx context.Context, target string) ([]core.MatchRe
 
 	all := make([]core.MatchResult, 0, len(matches))
 	for _, m := range matches {
-		meta := make(map[string]string)
+		meta := make(map[string]interface{})
 		for _, kv := range m.Metas {
-			meta[kv.Identifier] = fmt.Sprintf("%v", kv.Value)
+			meta[kv.Identifier] = kv.Value
 		}
 
 		all = append(all, core.MatchResult{
@@ -118,9 +118,9 @@ type yaracCallback struct {
 }
 
 func (c *yaracCallback) RuleMatching(_ *yarac.ScanContext, r *yarac.Rule) (bool, error) {
-	meta := make(map[string]string)
+	meta := make(map[string]interface{})
 	for _, kv := range r.Metas() {
-		meta[kv.Identifier] = fmt.Sprintf("%v", kv.Value)
+		meta[kv.Identifier] = kv.Value
 	}
 
 	c.results = append(c.results, core.MatchResult{

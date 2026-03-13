@@ -59,9 +59,9 @@ func (d *yaraxDetector) scan(ctx context.Context, target string) ([]core.MatchRe
 
 	var all []core.MatchResult
 	for _, m := range results.MatchingRules() {
-		meta := make(map[string]string)
+		meta := make(map[string]interface{})
 		for _, kv := range m.Metadata() {
-			meta[kv.Identifier()] = fmt.Sprintf("%v", kv.Value())
+			meta[kv.Identifier()] = kv.Value()
 		}
 
 		all = append(all, core.MatchResult{
@@ -93,9 +93,9 @@ func (d *yaraxDetector) scanMem(ctx context.Context, target string, data []byte)
 
 	var all []core.MatchResult
 	for _, m := range results.MatchingRules() {
-		meta := make(map[string]string)
+		meta := make(map[string]interface{})
 		for _, kv := range m.Metadata() {
-			meta[kv.Identifier()] = fmt.Sprintf("%v", kv.Value())
+			meta[kv.Identifier()] = kv.Value()
 		}
 		all = append(all, core.MatchResult{
 			DetectorName: "yarax",
