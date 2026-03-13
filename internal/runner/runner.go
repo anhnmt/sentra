@@ -155,7 +155,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Int64("files", fileCount.Load()).
 		Int64("matches", matchCount.Load()).
 		Int("errors", len(errs)).
-		Dur("duration", time.Since(start)).
+		Str("duration", time.Since(start).Round(time.Second).String()).
 		Msg("scan complete")
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
