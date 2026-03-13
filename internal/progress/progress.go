@@ -3,6 +3,7 @@ package progress
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -65,6 +66,7 @@ func (b *Bar) Done(total int64) {
 	b.bar.SetTotal(total, true)
 	time.Sleep(200 * time.Millisecond)
 	b.progress.Wait()
+	b.Writer = os.Stdout
 }
 
 func NewDownloadBar(r io.Reader, total int64, name string) (io.ReadCloser, func()) {

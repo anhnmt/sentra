@@ -149,6 +149,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	<-done
 	bar.Done(fileCount.Load())
+	logger.InitWithWriter(bar.Writer)
 
 	log.Info().
 		Int64("files", fileCount.Load()).
