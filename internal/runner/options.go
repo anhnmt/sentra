@@ -8,9 +8,10 @@ import (
 
 type Options struct {
 	UpdateSignatures bool
-	RulesDir         string
 	Target           string
-	Workers          int
+	RulesDir         string
+	Workers          int // I/O workers
+	ScanWorkers      int // CGo scan workers, default runtime.NumCPU()
 }
 
 func ParseOptions() *Options {

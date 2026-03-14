@@ -99,17 +99,15 @@ func compileRule(path string, yarax, yarac yara) error {
 func (d *YaraDetector) Name() string { return "yara" }
 
 func (d *YaraDetector) Close() {
-	d.wg.Wait()
+	d.wg.Wait() // chờ hết scan trước khi free Rust state
 	for _, b := range d.backends {
 		b.close()
 	}
 }
 
-func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchResult, error) {
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-
+// Scan nhận data từ ngoài (đã đọc bởi ioPool trong runner)
+// không tự open/mmap nữa — tách biệt I/O và scan concern
+func (d *YaraDetector) Scan(_ context.Context, target string, data []byte) ([]core.MatchResult, error) {
 	if d.isRulesPath(target) || !isEligible(target) {
 		return nil, nil
 	}
@@ -117,25 +115,10 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 	d.wg.Add(1)
 	defer d.wg.Done()
 
-	f, err := os.Open(target)
-	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("open %s: %w", target, err)
-	}
-	defer f.Close()
-
-	data, err := mmap.Map(f, mmap.RDONLY, 0)
-	if err != nil {
-		return d.runBackends(target, nil)
-	}
-	defer data.Unmap()
-
 	return d.runBackends(target, data)
 }
 
-func (d *YaraDetector) runBackends(target string, data mmap.MMap) ([]core.MatchResult, error) {
+func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResult, error) {
 	type result struct {
 		matches []core.MatchResult
 		err     error
@@ -151,6 +134,7 @@ func (d *YaraDetector) runBackends(target string, data mmap.MMap) ([]core.MatchR
 			var m []core.MatchResult
 			var err error
 			if data != nil {
+				// context.Background() vì không thể cancel CGo an toàn
 				m, err = b.scanMem(context.Background(), target, data)
 			} else {
 				m, err = b.scan(context.Background(), target)

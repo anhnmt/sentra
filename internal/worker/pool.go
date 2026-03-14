@@ -2,6 +2,7 @@ package worker
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/panjf2000/ants/v2"
 )
@@ -18,7 +19,22 @@ func New(opts *Options) (*Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new pool: %w", err)
 	}
+	return &Pool{pool: pool}, nil
+}
 
+func NewScanPool() (*Pool, error) {
+	size := runtime.NumCPU()
+	pool, err := ants.NewPool(size,
+		ants.WithPreAlloc(true),
+		ants.WithNonblocking(false),
+		// Rust panic không propagate lên Go — cần recover để tránh crash
+		ants.WithPanicHandler(func(v interface{}) {
+			// log thay vì crash toàn bộ process
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("new scan pool: %w", err)
+	}
 	return &Pool{pool: pool}, nil
 }
 
