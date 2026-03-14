@@ -140,6 +140,16 @@ func (r *Runner) Run(ctx context.Context) error {
 					return ctx.Err()
 				}
 
+				// dùng DirEntry.Info() — reuse syscall fastwalk đã làm, không stat lại
+				info, err := d.Info()
+				if err != nil || !yara.IsEligibleInfo(info) {
+					return nil
+				}
+				// isRulesPath check luôn ở đây nếu muốn triệt để
+				if r.detector.IsRulesPath(path) {
+					return nil
+				}
+
 				bar.Increment(fileCount.Add(1))
 
 				wg.Add(1)

@@ -108,13 +108,8 @@ func (d *YaraDetector) Close() {
 // Scan nhận data từ ngoài (đã đọc bởi ioPool trong runner)
 // không tự open/mmap nữa — tách biệt I/O và scan concern
 func (d *YaraDetector) Scan(_ context.Context, target string, data []byte) ([]core.MatchResult, error) {
-	if d.isRulesPath(target) || !isEligible(target) {
-		return nil, nil
-	}
-
 	d.wg.Add(1)
 	defer d.wg.Done()
-
 	return d.runBackends(target, data)
 }
 
@@ -162,7 +157,7 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 	return all, nil
 }
 
-func (d *YaraDetector) isRulesPath(target string) bool {
+func (d *YaraDetector) IsRulesPath(target string) bool {
 	abs, err := filepath.Abs(target)
 	if err != nil {
 		return false
