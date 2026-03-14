@@ -25,11 +25,21 @@ import (
 
 const mmapThreshold = 512 * 1024 // 512KB
 
+// skipDirs — bỏ qua hoàn toàn, không walk vào
+var skipDirs = map[string]struct{}{
+	".git":         {},
+	".svn":         {},
+	"node_modules": {},
+	"vendor":       {},
+	".cache":       {},
+	".devenv":      {},
+}
+
 type Runner struct {
 	opts     *Options
 	detector *yara.YaraDetector
-	ioPool   *worker.Pool // walk + open file + mmap
-	scanPool *worker.Pool // CGo/Rust scan, giới hạn NumCPU
+	ioPool   *worker.Pool
+	scanPool *worker.Pool
 }
 
 func New(opts *Options) (*Runner, error) {
@@ -130,9 +140,19 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 					return err
 				}
-				if d.IsDir() && path == r.opts.RulesDir {
-					return fastwalk.SkipDir
+
+				if d.IsDir() {
+					// skip rules dir
+					if path == r.opts.RulesDir {
+						return fastwalk.SkipDir
+					}
+					// skip known noisy dirs theo base name
+					if _, skip := skipDirs[filepath.Base(path)]; skip {
+						return fastwalk.SkipDir
+					}
+					return nil
 				}
+
 				if d.Type() != 0 {
 					return nil
 				}
@@ -140,12 +160,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					return ctx.Err()
 				}
 
-				// dùng DirEntry.Info() — reuse syscall fastwalk đã làm, không stat lại
+				// dùng DirEntry.Info() — reuse info fastwalk đã có
 				info, err := d.Info()
-				if err != nil || !yara.IsEligibleInfo(info) {
+				if err != nil {
 					return nil
 				}
-				// isRulesPath check luôn ở đây nếu muốn triệt để
+				if !yara.IsEligibleInfo(info) {
+					return nil
+				}
 				if r.detector.IsRulesPath(path) {
 					return nil
 				}
@@ -154,7 +176,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 				wg.Add(1)
 				if err := r.ioPool.Submit(func() {
-					// ioPool: chỉ lo đọc file
 					data, cleanup, err := readFile(path)
 					if err != nil {
 						wg.Done()
@@ -162,13 +183,18 @@ func (r *Runner) Run(ctx context.Context) error {
 						return
 					}
 					if data == nil {
-						// file không đọc được (permission, v.v.) — skip
 						cleanup()
 						wg.Done()
 						return
 					}
 
-					// scanPool: CGo/Rust scan
+					// magic check sau khi đọc — skip binary không liên quan
+					if yara.HasSkipMagic(data) {
+						cleanup()
+						wg.Done()
+						return
+					}
+
 					if err := r.scanPool.Submit(func() {
 						defer wg.Done()
 						defer cleanup()
@@ -228,10 +254,6 @@ func (r *Runner) Close() {
 	log.Info().Msg("Goodbye!")
 }
 
-// readFile đọc file với threshold:
-// - nhỏ hơn mmapThreshold → io.ReadAll (ít overhead hơn)
-// - lớn hơn → mmap (tránh copy vào heap)
-// cleanup phải được gọi sau khi scan xong
 func readFile(path string) ([]byte, func(), error) {
 	noop := func() {}
 
@@ -263,7 +285,6 @@ func readFile(path string) ([]byte, func(), error) {
 	mapped, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
 		f.Close()
-		// fallback về ReadAll nếu mmap fail
 		f2, err2 := os.Open(path)
 		if err2 != nil {
 			return nil, noop, fmt.Errorf("open %s: %w", path, err2)
