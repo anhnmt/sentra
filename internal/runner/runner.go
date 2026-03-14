@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/charlievieth/fastwalk"
@@ -44,7 +43,7 @@ type Runner struct {
 	detector *yara.YaraDetector
 	ioPool   *worker.Pool
 	scanPool *worker.Pool
-	skipDirs map[string]struct{} // merge của default + opts.SkipDirs
+	skipDirs map[string]struct{}
 }
 
 func New(opts *Options) (*Runner, error) {
@@ -63,7 +62,6 @@ func New(opts *Options) (*Runner, error) {
 		return nil, fmt.Errorf("init scan pool: %w", err)
 	}
 
-	// merge default + user-provided skip dirs
 	skipDirs := make(map[string]struct{}, len(defaultSkipDirs)+len(opts.SkipDirs))
 	for k := range defaultSkipDirs {
 		skipDirs[k] = struct{}{}
@@ -107,7 +105,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	bar := progress.New(progress.Options{
 		Workers: r.opts.Workers,
 	})
-
 	logger.InitWithWriter(bar.Writer)
 
 	type result struct {
@@ -121,10 +118,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		wg         sync.WaitGroup
 		mu         sync.Mutex
 		errs       []error
-		fileCount  atomic.Int64
-		matchCount atomic.Int64
-		skipCount  atomic.Int64 // file bị filter bởi magic/size
-		errorCount atomic.Int64
+		errorCount int64
 		done       = make(chan struct{})
 	)
 
@@ -136,7 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for res := range ch {
 			if res.err != nil {
 				if !errors.Is(res.err, os.ErrPermission) {
-					errorCount.Add(1)
+					errorCount++
 					mu.Lock()
 					errs = append(errs, res.err)
 					mu.Unlock()
@@ -144,7 +138,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				continue
 			}
 			for _, match := range res.matches {
-				matchCount.Add(1)
+				bar.IncrementMatch()
 				log.Warn().
 					Str("detector", match.DetectorName).
 					Str("rule", match.RuleName).
@@ -177,7 +171,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// baseDepth = số separator trong target path, dùng để tính relative depth
 	baseDepth := strings.Count(r.opts.Target, string(os.PathSeparator))
 
 	var walkErr error
@@ -211,7 +204,6 @@ func (r *Runner) Run(ctx context.Context) error {
 					if _, skip := r.skipDirs[filepath.Base(path)]; skip {
 						return fastwalk.SkipDir
 					}
-					// max-depth check — chỉ apply khi MaxDepth > 0
 					if r.opts.MaxDepth > 0 {
 						depth := strings.Count(path, string(os.PathSeparator)) - baseDepth
 						if depth >= r.opts.MaxDepth {
@@ -233,14 +225,14 @@ func (r *Runner) Run(ctx context.Context) error {
 					return nil
 				}
 				if !yara.IsEligibleInfo(info, r.opts.MinFileSize, r.opts.MaxFileSize) {
-					skipCount.Add(1)
+					bar.IncrementSkip()
 					return nil
 				}
 				if r.detector.IsRulesPath(path) {
 					return nil
 				}
 
-				bar.Increment(fileCount.Add(1))
+				bar.IncrementFile()
 
 				isMmap := info.Size() >= mmapThreshold
 
@@ -260,7 +252,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					if yara.HasSkipMagic(data) {
 						cleanup()
 						wg.Done()
-						skipCount.Add(1)
+						bar.IncrementSkip()
 						return
 					}
 
@@ -305,24 +297,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	}()
 
 	<-done
-	bar.Done(fileCount.Load())
+	bar.Done()
 	logger.InitWithWriter(bar.Writer)
 
 	canceled := errors.Is(ctx.Err(), context.Canceled)
 
 	if canceled {
 		log.Warn().
-			Int64("scanned", fileCount.Load()).
-			Int64("skipped", skipCount.Load()).
-			Int64("matches", matchCount.Load()).
+			Int64("scanned", bar.Files()).
+			Int64("skipped", bar.Skipped()).
+			Int64("matches", bar.Matches()).
 			Str("duration", time.Since(start).Round(time.Second).String()).
 			Msg("scan canceled")
 	} else {
 		log.Info().
-			Int64("scanned", fileCount.Load()).
-			Int64("skipped", skipCount.Load()).
-			Int64("matches", matchCount.Load()).
-			Int64("errors", errorCount.Load()).
+			Int64("scanned", bar.Files()).
+			Int64("skipped", bar.Skipped()).
+			Int64("matches", bar.Matches()).
+			Int64("errors", errorCount).
 			Str("duration", time.Since(start).Round(time.Second).String()).
 			Msg("scan complete")
 	}
@@ -386,9 +378,5 @@ func readFile(path string) ([]byte, func(), error) {
 		return data, noop, nil
 	}
 
-	cleanup := func() {
-		mapped.Unmap()
-		f.Close()
-	}
-	return mapped, cleanup, nil
+	return mapped, func() { mapped.Unmap(); f.Close() }, nil
 }

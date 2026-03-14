@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/vbauerster/mpb/v8"
@@ -13,7 +14,11 @@ import (
 type Bar struct {
 	bar      *mpb.Bar
 	progress *mpb.Progress
-	Writer   io.Writer // zerolog ghi vào đây thay vì os.Stdout
+	Writer   io.Writer
+
+	files   atomic.Int64
+	skipped atomic.Int64
+	matches atomic.Int64
 }
 
 type Options struct {
@@ -24,7 +29,7 @@ type Options struct {
 
 func New(opts Options) *Bar {
 	if opts.Width == 0 {
-		opts.Width = 50
+		opts.Width = 80
 	}
 	if opts.RefreshRate == 0 {
 		opts.RefreshRate = 100 * time.Millisecond
@@ -35,14 +40,30 @@ func New(opts Options) *Bar {
 		mpb.WithRefreshRate(opts.RefreshRate),
 	)
 
-	bar := p.New(
+	b := &Bar{progress: p, Writer: p}
+
+	b.bar = p.New(
 		-1,
 		mpb.SpinnerStyle("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
 		mpb.PrependDecorators(
 			decor.Name("SCANNING "),
-			decor.CurrentNoUnit("%d files  "),
+			decor.Any(func(_ decor.Statistics) string {
+				return fmt.Sprintf("%d files  ", b.files.Load())
+			}),
 			decor.Elapsed(decor.ET_STYLE_GO),
-			decor.Name(fmt.Sprintf("  %d workers  ", opts.Workers)),
+			decor.Name(fmt.Sprintf("  %d workers", opts.Workers)),
+			decor.Any(func(_ decor.Statistics) string {
+				skipped := b.skipped.Load()
+				matches := b.matches.Load()
+				s := ""
+				if skipped > 0 {
+					s += fmt.Sprintf("  skip %d", skipped)
+				}
+				if matches > 0 {
+					s += fmt.Sprintf("  match %d", matches)
+				}
+				return s + "  "
+			}),
 		),
 		mpb.AppendDecorators(
 			decor.Name(" "),
@@ -51,19 +72,29 @@ func New(opts Options) *Bar {
 		mpb.BarRemoveOnComplete(),
 	)
 
-	return &Bar{
-		bar:      bar,
-		progress: p,
-		Writer:   p, // mpb.Progress implement io.Writer, tự xử lý clear/redraw
-	}
+	return b
 }
 
-func (b *Bar) Increment(n int64) {
+func (b *Bar) IncrementFile() int64 {
+	n := b.files.Add(1)
 	b.bar.SetCurrent(n)
+	return n
 }
 
-func (b *Bar) Done(total int64) {
-	b.bar.SetTotal(total, true)
+func (b *Bar) IncrementSkip() {
+	b.skipped.Add(1)
+}
+
+func (b *Bar) IncrementMatch() {
+	b.matches.Add(1)
+}
+
+func (b *Bar) Files() int64   { return b.files.Load() }
+func (b *Bar) Skipped() int64 { return b.skipped.Load() }
+func (b *Bar) Matches() int64 { return b.matches.Load() }
+
+func (b *Bar) Done() {
+	b.bar.SetTotal(b.files.Load(), true)
 	time.Sleep(200 * time.Millisecond)
 	b.progress.Wait()
 	b.Writer = os.Stdout
