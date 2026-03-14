@@ -60,7 +60,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		Workers: r.opts.Workers,
 	})
 
-	// redirect zerolog vào mpb — bar luôn ở dưới cùng
 	logger.InitWithWriter(bar.Writer)
 
 	type result struct {
@@ -122,10 +121,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				if d.Type() != 0 {
 					return nil
 				}
-				select {
-				case <-ctx.Done():
+
+				// check trước khi submit — không đẩy job mới khi đã cancel
+				if ctx.Err() != nil {
 					return ctx.Err()
-				default:
 				}
 
 				bar.Increment(fileCount.Add(1))
@@ -151,17 +150,27 @@ func (r *Runner) Run(ctx context.Context) error {
 	bar.Done(fileCount.Load())
 	logger.InitWithWriter(bar.Writer)
 
-	log.Info().
-		Int64("files", fileCount.Load()).
-		Int64("matches", matchCount.Load()).
-		Int("errors", len(errs)).
-		Str("duration", time.Since(start).Round(time.Second).String()).
-		Msg("scan complete")
+	canceled := errors.Is(ctx.Err(), context.Canceled)
+
+	if canceled {
+		log.Warn().
+			Int64("files", fileCount.Load()).
+			Int64("matches", matchCount.Load()).
+			Str("duration", time.Since(start).Round(time.Second).String()).
+			Msg("scan canceled")
+	} else {
+		log.Info().
+			Int64("files", fileCount.Load()).
+			Int64("matches", matchCount.Load()).
+			Int("errors", len(errs)).
+			Str("duration", time.Since(start).Round(time.Second).String()).
+			Msg("scan complete")
+	}
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 		return fmt.Errorf("walk %s: %w", r.opts.Target, walkErr)
 	}
-	if len(errs) > 0 {
+	if len(errs) > 0 && !canceled {
 		return fmt.Errorf("scan errors: %v", errs)
 	}
 	return nil

@@ -47,6 +47,7 @@ func main() {
 	if err != nil {
 		log.Info().Msgf("Failed to create runner: %v", err)
 	}
+	defer runner.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -61,6 +62,4 @@ func main() {
 	// Graceful shutdown
 	<-ctx.Done()
 	log.Info().Msgf("Shutting down...")
-
-	runner.Close()
 }

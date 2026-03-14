@@ -27,6 +27,7 @@ type yara interface {
 type YaraDetector struct {
 	backends    []yara
 	absRulesDir string
+	wg          sync.WaitGroup
 }
 
 func New(rulesDir string) (*YaraDetector, error) {
@@ -98,15 +99,23 @@ func compileRule(path string, yarax, yarac yara) error {
 func (d *YaraDetector) Name() string { return "yara" }
 
 func (d *YaraDetector) Close() {
+	d.wg.Wait()
 	for _, b := range d.backends {
 		b.close()
 	}
 }
 
 func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchResult, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	if d.isRulesPath(target) || !isEligible(target) {
 		return nil, nil
 	}
+
+	d.wg.Add(1)
+	defer d.wg.Done()
 
 	f, err := os.Open(target)
 	if err != nil {
@@ -119,14 +128,14 @@ func (d *YaraDetector) Scan(ctx context.Context, target string) ([]core.MatchRes
 
 	data, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
-		return d.runBackends(ctx, target, nil)
+		return d.runBackends(target, nil)
 	}
 	defer data.Unmap()
 
-	return d.runBackends(ctx, target, data)
+	return d.runBackends(target, data)
 }
 
-func (d *YaraDetector) runBackends(ctx context.Context, target string, data mmap.MMap) ([]core.MatchResult, error) {
+func (d *YaraDetector) runBackends(target string, data mmap.MMap) ([]core.MatchResult, error) {
 	type result struct {
 		matches []core.MatchResult
 		err     error
@@ -142,9 +151,9 @@ func (d *YaraDetector) runBackends(ctx context.Context, target string, data mmap
 			var m []core.MatchResult
 			var err error
 			if data != nil {
-				m, err = b.scanMem(ctx, target, data)
+				m, err = b.scanMem(context.Background(), target, data)
 			} else {
-				m, err = b.scan(ctx, target)
+				m, err = b.scan(context.Background(), target)
 			}
 			ch <- result{m, err}
 		}(b)
@@ -155,7 +164,6 @@ func (d *YaraDetector) runBackends(ctx context.Context, target string, data mmap
 
 	var all []core.MatchResult
 	var errCount int
-
 	for r := range ch {
 		if r.err != nil {
 			errCount++
