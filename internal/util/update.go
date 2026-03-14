@@ -2,6 +2,7 @@ package util
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,36 +12,98 @@ import (
 	"time"
 
 	"github.com/anhnmt/sentra/internal/progress"
+	"github.com/rs/zerolog/log"
 )
 
 const (
-	yaraForgeURL = "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip"
-	yaraDestDir  = "signatures/yara"
-	yaraTmpFile  = "yara-forge-rules-core.zip"
+	yaraForgeURL    = "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-core.zip"
+	yaraForgeAPIURL = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
+	yaraDestDir     = "signatures/yara"
+	yaraTmpFile     = "yara-forge-rules-core.zip"
+	yaraVersionFile = "signatures/yara/.version"
 )
 
 func UpdateSignatures() error {
-	fmt.Println("→ Downloading YARA rules from yara-forge...")
+	log.Info().Msg("Checking latest yara-forge release")
+
+	latest, err := fetchLatestTag()
+	if err != nil {
+		return fmt.Errorf("version check failed: %w", err)
+	}
+
+	if cached, _ := readCachedVersion(); cached == latest {
+		log.Info().Str("version", latest).Msg("Already up-to-date")
+		return nil
+	}
+
+	log.Info().Str("version", latest).Msg("Downloading YARA rules")
 
 	start := time.Now()
 	if err := downloadFile(yaraForgeURL, yaraTmpFile); err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
-	fmt.Printf("  ✓ Downloaded (%s)\n", time.Since(start).Round(time.Millisecond))
+	log.Info().Dur("elapsed", time.Since(start).Round(time.Millisecond)).Msg("Downloaded")
 	defer os.Remove(yaraTmpFile)
 
 	if err := os.MkdirAll(yaraDestDir, 0755); err != nil {
 		return fmt.Errorf("mkdir '%s': %w", yaraDestDir, err)
 	}
 
-	fmt.Printf("→ Extracting *.yar into %s...\n", yaraDestDir)
+	log.Info().Str("dest", yaraDestDir).Msg("Extracting .yar files")
 	count, err := extractYarFiles(yaraTmpFile, yaraDestDir)
 	if err != nil {
 		return fmt.Errorf("extract failed: %w", err)
 	}
 
-	fmt.Printf("✓ Updated: %d .yar files\n", count)
+	if err := writeCachedVersion(latest); err != nil {
+		log.Warn().Err(err).Msg("Could not save version cache")
+	}
+
+	log.Info().Str("version", latest).Int("count", count).Msg("Updated .yar files")
 	return nil
+}
+
+func fetchLatestTag() (string, error) {
+	req, err := http.NewRequest(http.MethodGet, yaraForgeAPIURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "sentra-updater")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API HTTP %d", resp.StatusCode)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("empty tag_name in response")
+	}
+	return release.TagName, nil
+}
+
+func readCachedVersion() (string, error) {
+	b, err := os.ReadFile(yaraVersionFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+func writeCachedVersion(tag string) error {
+	return os.WriteFile(yaraVersionFile, []byte(tag+"\n"), 0644)
 }
 
 func downloadFile(url, localPath string) error {
@@ -54,7 +117,6 @@ func downloadFile(url, localPath string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// wrap body với progress bar
 	proxy, wait := progress.NewDownloadBar(resp.Body, resp.ContentLength, "downloading")
 	defer wait()
 	defer proxy.Close()
