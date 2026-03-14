@@ -6,11 +6,7 @@ import (
 	"os"
 )
 
-const (
-	minFileSize = 4 << 10  // 4KB
-	maxFileSize = 30 << 20 // 30MB
-	magicReadN  = 8        // chỉ đọc 8 byte đầu
-)
+const magicReadN = 8
 
 // skipMagic — các format binary không cần YARA scan
 var skipMagic = [][]byte{
@@ -26,21 +22,19 @@ var skipMagic = [][]byte{
 	{0x66, 0x74, 0x79, 0x70},                         // MOV
 }
 
-func IsEligible(path string) bool {
+func IsEligible(path string, minSize, maxSize int64) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	return IsEligibleInfo(info)
+	return IsEligibleInfo(info, minSize, maxSize)
 }
 
-func IsEligibleInfo(info fs.FileInfo) bool {
+func IsEligibleInfo(info fs.FileInfo, minSize, maxSize int64) bool {
 	size := info.Size()
-	return size >= minFileSize && size <= maxFileSize
+	return size >= minSize && size <= maxSize
 }
 
-// HasSkipMagic check 8 byte đầu của data — gọi sau khi đã đọc file
-// tránh scan toàn bộ file binary không liên quan
 func HasSkipMagic(data []byte) bool {
 	if len(data) < magicReadN {
 		return false

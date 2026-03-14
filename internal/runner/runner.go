@@ -232,7 +232,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if err != nil {
 					return nil
 				}
-				if !yara.IsEligibleInfo(info) {
+				if !yara.IsEligibleInfo(info, r.opts.MinFileSize, r.opts.MaxFileSize) {
 					skipCount.Add(1)
 					return nil
 				}
