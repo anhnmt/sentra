@@ -99,14 +99,12 @@ func compileRule(path string, yarax, yarac yara) error {
 func (d *YaraDetector) Name() string { return "yara" }
 
 func (d *YaraDetector) Close() {
-	d.wg.Wait() // chờ hết scan trước khi free Rust state
+	d.wg.Wait()
 	for _, b := range d.backends {
 		b.close()
 	}
 }
 
-// Scan nhận data từ ngoài (đã đọc bởi ioPool trong runner)
-// không tự open/mmap nữa — tách biệt I/O và scan concern
 func (d *YaraDetector) Scan(_ context.Context, target string, data []byte) ([]core.MatchResult, error) {
 	d.wg.Add(1)
 	defer d.wg.Done()
@@ -129,7 +127,6 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 			var m []core.MatchResult
 			var err error
 			if data != nil {
-				// context.Background() vì không thể cancel CGo an toàn
 				m, err = b.scanMem(context.Background(), target, data)
 			} else {
 				m, err = b.scan(context.Background(), target)
@@ -141,14 +138,27 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 	wg.Wait()
 	close(ch)
 
-	var all []core.MatchResult
 	var errCount int
+	// pre-alloc với cap = backends để tránh realloc trong trường hợp thường
+	all := make([]core.MatchResult, 0, len(d.backends))
+	// dedup theo (rule, namespace) — tránh 2 backend report cùng 1 match
+	seen := make(map[string]struct{}, len(d.backends))
+
 	for r := range ch {
 		if r.err != nil {
 			errCount++
 			continue
 		}
-		all = append(all, r.matches...)
+		for _, m := range r.matches {
+			// key = ruleName + "|" + namespace — đủ unique, không cần target vì
+			// runBackends chỉ xử lý 1 file tại 1 thời điểm
+			key := m.RuleName + "|" + m.DetectorName
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			all = append(all, m)
+		}
 	}
 
 	if errCount == len(d.backends) {

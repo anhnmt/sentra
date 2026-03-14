@@ -23,9 +23,11 @@ import (
 	"github.com/anhnmt/sentra/internal/worker"
 )
 
-const mmapThreshold = 512 * 1024 // 512KB
+const (
+	mmapThreshold = 512 * 1024 // 512KB — dưới ngưỡng này dùng ReadAll
+	batchSize     = 16         // gom 16 file nhỏ thành 1 scan job
+)
 
-// skipDirs — bỏ qua hoàn toàn, không walk vào
 var skipDirs = map[string]struct{}{
 	".git":         {},
 	".svn":         {},
@@ -64,6 +66,13 @@ func New(opts *Options) (*Runner, error) {
 		ioPool:   ioPool,
 		scanPool: scanPool,
 	}, nil
+}
+
+// scanItem là 1 file đã đọc xong, chờ scan
+type scanItem struct {
+	path    string
+	data    []byte
+	cleanup func()
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -129,9 +138,45 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}()
 
+	// submitBatch gom batch vào scanPool — 1 goroutine scan tuần tự nhiều file nhỏ
+	submitBatch := func(batch []scanItem) {
+		if len(batch) == 0 {
+			return
+		}
+		wg.Add(1)
+		items := batch // capture slice hiện tại
+		if err := r.scanPool.Submit(func() {
+			defer wg.Done()
+			for _, item := range items {
+				matches, err := r.detector.Scan(context.Background(), item.path, item.data)
+				item.cleanup()
+				ch <- result{matches, err}
+			}
+		}); err != nil {
+			wg.Done()
+			for _, item := range items {
+				item.cleanup()
+				ch <- result{nil, fmt.Errorf("submit scan %s: %w", item.path, err)}
+			}
+		}
+	}
+
 	// producer
 	var walkErr error
 	go func() {
+		var (
+			batchMu sync.Mutex
+			batch   []scanItem
+		)
+
+		flushBatch := func() {
+			batchMu.Lock()
+			cur := batch
+			batch = nil
+			batchMu.Unlock()
+			submitBatch(cur)
+		}
+
 		walkErr = fastwalk.Walk(&fastwalk.Config{Follow: false}, r.opts.Target,
 			func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
@@ -142,11 +187,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 
 				if d.IsDir() {
-					// skip rules dir
 					if path == r.opts.RulesDir {
 						return fastwalk.SkipDir
 					}
-					// skip known noisy dirs theo base name
 					if _, skip := skipDirs[filepath.Base(path)]; skip {
 						return fastwalk.SkipDir
 					}
@@ -160,7 +203,6 @@ func (r *Runner) Run(ctx context.Context) error {
 					return ctx.Err()
 				}
 
-				// dùng DirEntry.Info() — reuse info fastwalk đã có
 				info, err := d.Info()
 				if err != nil {
 					return nil
@@ -173,6 +215,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 
 				bar.Increment(fileCount.Add(1))
+
+				isMmap := info.Size() >= mmapThreshold
 
 				wg.Add(1)
 				if err := r.ioPool.Submit(func() {
@@ -187,23 +231,46 @@ func (r *Runner) Run(ctx context.Context) error {
 						wg.Done()
 						return
 					}
-
-					// magic check sau khi đọc — skip binary không liên quan
 					if yara.HasSkipMagic(data) {
 						cleanup()
 						wg.Done()
 						return
 					}
 
-					if err := r.scanPool.Submit(func() {
-						defer wg.Done()
-						defer cleanup()
-						matches, err := r.detector.Scan(context.Background(), path, data)
-						ch <- result{matches, err}
-					}); err != nil {
-						cleanup()
+					if isMmap {
+						// file lớn: submit riêng ngay, không batch
+						// giữ wg.Add(1) từ walk, transfer sang scanPool job
+						if err := r.scanPool.Submit(func() {
+							defer wg.Done()
+							defer cleanup()
+							matches, err := r.detector.Scan(context.Background(), path, data)
+							ch <- result{matches, err}
+						}); err != nil {
+							cleanup()
+							wg.Done()
+							ch <- result{nil, fmt.Errorf("submit scan %s: %w", path, err)}
+						}
+						return
+					}
+
+					// file nhỏ: gom vào batch, wg.Done() sẽ do submitBatch xử lý
+					batchMu.Lock()
+					batch = append(batch, scanItem{path: path, data: data, cleanup: cleanup})
+					full := len(batch) >= batchSize
+					cur := batch
+					if full {
+						batch = nil
+					}
+					batchMu.Unlock()
+
+					if full {
+						// wg.Done() cho file này đã được tính trong wg.Add(1) ở walk
+						// nhưng submitBatch sẽ Add(1) riêng cho cả batch
+						// → cần Done() cái Add(1) từ walk trước
 						wg.Done()
-						ch <- result{nil, fmt.Errorf("submit scan %s: %w", path, err)}
+						submitBatch(cur)
+					} else {
+						wg.Done()
 					}
 				}); err != nil {
 					wg.Done()
@@ -213,6 +280,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			},
 		)
 
+		// flush batch còn lại sau khi walk xong
+		flushBatch()
 		wg.Wait()
 		close(ch)
 	}()
