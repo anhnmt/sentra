@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,11 +25,12 @@ import (
 )
 
 const (
-	mmapThreshold = 512 * 1024 // 512KB — dưới ngưỡng này dùng ReadAll
-	batchSize     = 16         // gom 16 file nhỏ thành 1 scan job
+	mmapThreshold = 512 * 1024 // 512KB
+	batchSize     = 16
 )
 
-var skipDirs = map[string]struct{}{
+// defaultSkipDirs — built-in, luôn được skip
+var defaultSkipDirs = map[string]struct{}{
 	".git":         {},
 	".svn":         {},
 	"node_modules": {},
@@ -42,6 +44,7 @@ type Runner struct {
 	detector *yara.YaraDetector
 	ioPool   *worker.Pool
 	scanPool *worker.Pool
+	skipDirs map[string]struct{} // merge của default + opts.SkipDirs
 }
 
 func New(opts *Options) (*Runner, error) {
@@ -60,15 +63,24 @@ func New(opts *Options) (*Runner, error) {
 		return nil, fmt.Errorf("init scan pool: %w", err)
 	}
 
+	// merge default + user-provided skip dirs
+	skipDirs := make(map[string]struct{}, len(defaultSkipDirs)+len(opts.SkipDirs))
+	for k := range defaultSkipDirs {
+		skipDirs[k] = struct{}{}
+	}
+	for _, d := range opts.SkipDirs {
+		skipDirs[d] = struct{}{}
+	}
+
 	return &Runner{
 		opts:     opts,
 		detector: detector,
 		ioPool:   ioPool,
 		scanPool: scanPool,
+		skipDirs: skipDirs,
 	}, nil
 }
 
-// scanItem là 1 file đã đọc xong, chờ scan
 type scanItem struct {
 	path    string
 	data    []byte
@@ -88,6 +100,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		Str("target", r.opts.Target).
 		Str("rules_dir", r.opts.RulesDir).
 		Int("workers", r.opts.Workers).
+		Int("max_depth", r.opts.MaxDepth).
+		Strs("skip_dirs", r.opts.SkipDirs).
 		Msg("scan starting")
 
 	bar := progress.New(progress.Options{
@@ -109,6 +123,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		errs       []error
 		fileCount  atomic.Int64
 		matchCount atomic.Int64
+		skipCount  atomic.Int64 // file bị filter bởi magic/size
+		errorCount atomic.Int64
 		done       = make(chan struct{})
 	)
 
@@ -120,6 +136,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		for res := range ch {
 			if res.err != nil {
 				if !errors.Is(res.err, os.ErrPermission) {
+					errorCount.Add(1)
 					mu.Lock()
 					errs = append(errs, res.err)
 					mu.Unlock()
@@ -138,13 +155,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}()
 
-	// submitBatch gom batch vào scanPool — 1 goroutine scan tuần tự nhiều file nhỏ
 	submitBatch := func(batch []scanItem) {
 		if len(batch) == 0 {
 			return
 		}
 		wg.Add(1)
-		items := batch // capture slice hiện tại
+		items := batch
 		if err := r.scanPool.Submit(func() {
 			defer wg.Done()
 			for _, item := range items {
@@ -161,7 +177,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// producer
+	// baseDepth = số separator trong target path, dùng để tính relative depth
+	baseDepth := strings.Count(r.opts.Target, string(os.PathSeparator))
+
 	var walkErr error
 	go func() {
 		var (
@@ -190,8 +208,15 @@ func (r *Runner) Run(ctx context.Context) error {
 					if path == r.opts.RulesDir {
 						return fastwalk.SkipDir
 					}
-					if _, skip := skipDirs[filepath.Base(path)]; skip {
+					if _, skip := r.skipDirs[filepath.Base(path)]; skip {
 						return fastwalk.SkipDir
+					}
+					// max-depth check — chỉ apply khi MaxDepth > 0
+					if r.opts.MaxDepth > 0 {
+						depth := strings.Count(path, string(os.PathSeparator)) - baseDepth
+						if depth >= r.opts.MaxDepth {
+							return fastwalk.SkipDir
+						}
 					}
 					return nil
 				}
@@ -208,6 +233,7 @@ func (r *Runner) Run(ctx context.Context) error {
 					return nil
 				}
 				if !yara.IsEligibleInfo(info) {
+					skipCount.Add(1)
 					return nil
 				}
 				if r.detector.IsRulesPath(path) {
@@ -234,12 +260,11 @@ func (r *Runner) Run(ctx context.Context) error {
 					if yara.HasSkipMagic(data) {
 						cleanup()
 						wg.Done()
+						skipCount.Add(1)
 						return
 					}
 
 					if isMmap {
-						// file lớn: submit riêng ngay, không batch
-						// giữ wg.Add(1) từ walk, transfer sang scanPool job
 						if err := r.scanPool.Submit(func() {
 							defer wg.Done()
 							defer cleanup()
@@ -253,7 +278,6 @@ func (r *Runner) Run(ctx context.Context) error {
 						return
 					}
 
-					// file nhỏ: gom vào batch, wg.Done() sẽ do submitBatch xử lý
 					batchMu.Lock()
 					batch = append(batch, scanItem{path: path, data: data, cleanup: cleanup})
 					full := len(batch) >= batchSize
@@ -263,14 +287,9 @@ func (r *Runner) Run(ctx context.Context) error {
 					}
 					batchMu.Unlock()
 
+					wg.Done()
 					if full {
-						// wg.Done() cho file này đã được tính trong wg.Add(1) ở walk
-						// nhưng submitBatch sẽ Add(1) riêng cho cả batch
-						// → cần Done() cái Add(1) từ walk trước
-						wg.Done()
 						submitBatch(cur)
-					} else {
-						wg.Done()
 					}
 				}); err != nil {
 					wg.Done()
@@ -280,7 +299,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			},
 		)
 
-		// flush batch còn lại sau khi walk xong
 		flushBatch()
 		wg.Wait()
 		close(ch)
@@ -294,15 +312,17 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if canceled {
 		log.Warn().
-			Int64("files", fileCount.Load()).
+			Int64("scanned", fileCount.Load()).
+			Int64("skipped", skipCount.Load()).
 			Int64("matches", matchCount.Load()).
 			Str("duration", time.Since(start).Round(time.Second).String()).
 			Msg("scan canceled")
 	} else {
 		log.Info().
-			Int64("files", fileCount.Load()).
+			Int64("scanned", fileCount.Load()).
+			Int64("skipped", skipCount.Load()).
 			Int64("matches", matchCount.Load()).
-			Int("errors", len(errs)).
+			Int64("errors", errorCount.Load()).
 			Str("duration", time.Since(start).Round(time.Second).String()).
 			Msg("scan complete")
 	}
