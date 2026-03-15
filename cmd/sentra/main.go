@@ -12,6 +12,7 @@ import (
 
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/runner"
+	"github.com/anhnmt/sentra/internal/sysinfo"
 	"github.com/anhnmt/sentra/internal/util"
 )
 
@@ -32,6 +33,11 @@ func init() {
 
 func main() {
 	opts := runner.ParseOptions()
+
+	_, err := sysinfo.Collect()
+	if err != nil {
+		log.Warn().Err(err).Msg("could not collect system info")
+	}
 
 	if opts.UpdateSignatures {
 		err := util.UpdateSignatures()
