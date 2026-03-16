@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anhnmt/sentra/internal/progress"
 	"github.com/rs/zerolog/log"
+
+	"github.com/anhnmt/sentra/internal/progress"
 )
 
 const (
