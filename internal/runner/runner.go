@@ -28,16 +28,6 @@ const (
 	batchSize     = 16
 )
 
-// defaultSkipDirs — built-in, luôn được skip
-var defaultSkipDirs = map[string]struct{}{
-	".git":         {},
-	".svn":         {},
-	"node_modules": {},
-	"vendor":       {},
-	".cache":       {},
-	".devenv":      {},
-}
-
 type Runner struct {
 	opts     *Options
 	detector *yara.YaraDetector
@@ -62,10 +52,7 @@ func New(opts *Options) (*Runner, error) {
 		return nil, fmt.Errorf("init scan pool: %w", err)
 	}
 
-	skipDirs := make(map[string]struct{}, len(defaultSkipDirs)+len(opts.SkipDirs))
-	for k := range defaultSkipDirs {
-		skipDirs[k] = struct{}{}
-	}
+	skipDirs := make(map[string]struct{}, len(opts.SkipDirs))
 	for _, d := range opts.SkipDirs {
 		skipDirs[d] = struct{}{}
 	}
@@ -224,7 +211,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				if err != nil {
 					return nil
 				}
-				if !yara.IsEligibleInfo(info, r.opts.MinFileSize, r.opts.MaxFileSize) {
+				if !yara.IsEligibleInfo(info, int64(r.opts.MinFileSize), int64(r.opts.MaxFileSize)) {
 					bar.IncrementSkip()
 					return nil
 				}

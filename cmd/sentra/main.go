@@ -32,9 +32,12 @@ func init() {
 }
 
 func main() {
-	opts := runner.ParseOptions()
+	opts, err := runner.ParseOptions()
+	if err != nil {
+		log.Warn().Err(err).Msg("error parse")
+	}
 
-	_, err := sysinfo.Collect()
+	_, err = sysinfo.Collect()
 	if err != nil {
 		log.Warn().Err(err).Msg("could not collect system info")
 	}

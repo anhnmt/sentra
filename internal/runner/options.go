@@ -3,7 +3,7 @@ package runner
 import (
 	"runtime"
 
-	"github.com/spf13/pflag"
+	"github.com/projectdiscovery/goflags"
 )
 
 const (
@@ -16,38 +16,31 @@ type Options struct {
 	Target           string
 	RulesDir         string
 	Workers          int
-	ScanWorkers      int
-	SkipDirs         []string
+	SkipDirs         goflags.StringSlice
 	MaxDepth         int
-	MinFileSize      int64
-	MaxFileSize      int64
+	MinFileSize      int
+	MaxFileSize      int
 }
 
-func ParseOptions() *Options {
+func ParseOptions() (*Options, error) {
 	opts := &Options{}
 
-	NewGroups(pflag.CommandLine).
-		Add("Scan options", NewScanOptionsGroup(opts)).
-		Add("Util", NewUtilGroup(opts)).
-		Parse()
+	fs := goflags.NewFlagSet()
+	fs.SetDescription("Sentra - threat intelligence scanner")
 
-	return opts
-}
+	fs.CreateGroup("scan", "Scan Options",
+		fs.StringVar(&opts.Target, "target", "./", "file or directory to scan"),
+		fs.StringVar(&opts.RulesDir, "rules-dir", "signatures/yara", "YARA rules directory"),
+		fs.IntVar(&opts.Workers, "workers", runtime.NumCPU()*2, "number of I/O worker goroutines"),
+		fs.StringSliceVar(&opts.SkipDirs, "skip-dir", goflags.StringSlice{".git", "node_modules", "vendor"}, "directory names to skip (repeatable)", goflags.CommaSeparatedStringSliceOptions),
+		fs.IntVar(&opts.MaxDepth, "max-depth", 0, "maximum directory depth (0 = unlimited)"),
+		fs.IntVar(&opts.MinFileSize, "min-file-size", defaultMinFileSize, "minimum file size to scan in bytes"),
+		fs.IntVar(&opts.MaxFileSize, "max-file-size", defaultMaxFileSize, "maximum file size to scan in bytes"),
+	)
 
-func NewUtilGroup(opts *Options) *pflag.FlagSet {
-	fs := pflag.NewFlagSet("util", pflag.ExitOnError)
-	fs.BoolVar(&opts.UpdateSignatures, "update-signatures", false, "Update latest signatures")
-	return fs
-}
+	fs.CreateGroup("update", "Util",
+		fs.BoolVar(&opts.UpdateSignatures, "update-signatures", false, "update latest signatures"),
+	)
 
-func NewScanOptionsGroup(opts *Options) *pflag.FlagSet {
-	fs := pflag.NewFlagSet("yara", pflag.ExitOnError)
-	fs.StringVar(&opts.RulesDir, "rules-dir", "signatures/yara", "YARA rules directory")
-	fs.StringVar(&opts.Target, "target", "./", "File or directory to scan")
-	fs.IntVar(&opts.Workers, "workers", runtime.NumCPU()*2, "Number of I/O worker goroutines")
-	fs.StringArrayVar(&opts.SkipDirs, "skip-dir", nil, "Directory names to skip (can be repeated: --skip-dir .git --skip-dir build)")
-	fs.IntVar(&opts.MaxDepth, "max-depth", 0, "Maximum directory depth to walk (0 = unlimited)")
-	fs.Int64Var(&opts.MinFileSize, "min-file-size", defaultMinFileSize, "Minimum file size to scan in bytes")
-	fs.Int64Var(&opts.MaxFileSize, "max-file-size", defaultMaxFileSize, "Maximum file size to scan in bytes")
-	return fs
+	return opts, fs.Parse()
 }
