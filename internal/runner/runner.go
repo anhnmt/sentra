@@ -21,8 +21,6 @@ import (
 	"github.com/anhnmt/sentra/internal/worker"
 )
 
-const defaultDBPath = "sentra.db"
-
 type Runner struct {
 	opts     *Options
 	detector *yara.YaraDetector
@@ -41,9 +39,6 @@ type scanResult struct {
 // New creates a new Runner with optional bbolt store.
 func New(opts *Options) (*Runner, error) {
 	dbPath := opts.DBPath
-	if dbPath == "" {
-		dbPath = defaultDBPath
-	}
 
 	var db *store.Store
 	if dbPath != "" && dbPath != ":memory:" {
@@ -105,14 +100,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		Strs("skip_dirs", r.opts.SkipDirs).
 		Msg("scan starting")
 
-	// Generate scan ID and DB path with timestamp
-	scanID := time.Now().Format("20060102150405")
-
 	// If output is requested, generate DB and report paths with scan ID
 	if r.opts.OutputPath != "" {
-		dbPath := fmt.Sprintf("sentra-%s.db", scanID)
-		r.opts.DBPath = dbPath
-
 		// Close existing store if any
 		if r.store != nil {
 			r.store.Close()
@@ -120,9 +109,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Open new store with scan ID in path
 		var err error
-		r.store, err = store.Open(dbPath)
+		r.store, err = store.Open(r.opts.DBPath)
 		if err != nil {
-			log.Warn().Err(err).Msgf("failed to open db %s, running without history", dbPath)
+			log.Warn().Err(err).Msgf("failed to open db %s, running without history", r.opts.DBPath)
 			r.store = nil
 		}
 	}
@@ -130,7 +119,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Begin scan session if store is available
 	if r.store != nil {
 		rec := store.ScanRecord{
-			ID:        scanID,
+			ID:        r.opts.ScanID,
 			StartedAt: time.Now(),
 			Target:    r.opts.Target,
 			RulesDir:  r.opts.RulesDir,
@@ -201,7 +190,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			outputPath := r.opts.OutputPath
 			if !strings.HasSuffix(outputPath, ".html") {
 				// Assume it's a directory or prefix, append scan ID
-				outputPath = fmt.Sprintf("%s/report-%s.html", outputPath, r.session.Record.ID)
+				outputPath = fmt.Sprintf("%s/report-%s.html", outputPath, r.opts.ScanID)
 			}
 
 			cmdLine := strings.Join(os.Args, " ")

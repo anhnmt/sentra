@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/projectdiscovery/goflags"
 )
@@ -27,7 +29,7 @@ type Options struct {
 
 func ParseOptions() (*Options, error) {
 	opts := &Options{
-		DBPath: "sentra.db",
+		ScanID: time.Now().Format("20060102150405"),
 	}
 
 	fs := goflags.NewFlagSet()
@@ -48,12 +50,11 @@ func ParseOptions() (*Options, error) {
 	)
 
 	fs.CreateGroup("store", "Database",
-		fs.StringVar(&opts.DBPath, "db", opts.DBPath, "path to bbolt database file"),
+		fs.StringVar(&opts.DBPath, "db", fmt.Sprintf("sentra-%s.db", opts.ScanID), "path to bbolt database file"),
 	)
 
 	fs.CreateGroup("report", "Report",
 		fs.StringVar(&opts.OutputPath, "output", ".", "output HTML report path"),
-		fs.StringVar(&opts.ScanID, "scan-id", "", "scan ID to generate report (latest if empty)"),
 	)
 
 	return opts, fs.Parse()
