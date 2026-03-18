@@ -21,6 +21,8 @@ type Options struct {
 	MinFileSize      int
 	MaxFileSize      int
 	DBPath           string
+	OutputPath       string
+	ScanID           string
 }
 
 func ParseOptions() (*Options, error) {
@@ -47,6 +49,11 @@ func ParseOptions() (*Options, error) {
 
 	fs.CreateGroup("store", "Database",
 		fs.StringVar(&opts.DBPath, "db", opts.DBPath, "path to bbolt database file"),
+	)
+
+	fs.CreateGroup("report", "Report",
+		fs.StringVar(&opts.OutputPath, "output", "report.html", "output HTML report path"),
+		fs.StringVar(&opts.ScanID, "scan-id", "", "scan ID to generate report (latest if empty)"),
 	)
 
 	return opts, fs.Parse()

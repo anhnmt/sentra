@@ -52,6 +52,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Validate scan options
+	if opts.Target == "" {
+		log.Fatal().Msg("target is required (use --target)")
+	}
+
 	r, err := runner.New(opts)
 	if err != nil {
 		log.Fatal().Msgf("Failed to create runner: %v", err)

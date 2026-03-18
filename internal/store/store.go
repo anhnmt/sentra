@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -48,6 +49,66 @@ func (s *Store) initBuckets() error {
 // Close closes the underlying database.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// GetScan retrieves a scan record by ID.
+func (s *Store) GetScan(id string) (*ScanRecord, error) {
+	var rec *ScanRecord
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketScans).Get([]byte(id))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &rec)
+	})
+	return rec, err
+}
+
+// GetAllScanIDs returns all scan IDs sorted by most recent first.
+func (s *Store) GetAllScanIDs() ([]string, error) {
+	var ids []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		cur := tx.Bucket(bucketScans).Cursor()
+		for k, _ := cur.Last(); k != nil; k, _ = cur.Prev() {
+			ids = append(ids, string(k))
+		}
+		return nil
+	})
+	return ids, err
+}
+
+// GetMatches retrieves all matches for a scan.
+func (s *Store) GetMatches(scanID string) ([]MatchRecord, error) {
+	var matches []MatchRecord
+	err := s.db.View(func(tx *bolt.Tx) error {
+		sub := tx.Bucket(bucketMatches).Bucket([]byte(scanID))
+		if sub == nil {
+			return nil
+		}
+		cur := sub.Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			var m MatchRecord
+			if err := json.Unmarshal(v, &m); err != nil {
+				return err
+			}
+			matches = append(matches, m)
+		}
+		return nil
+	})
+	return matches, err
+}
+
+// GetDevice retrieves device info by hostname.
+func (s *Store) GetDevice(hostname string) (*DeviceInfo, error) {
+	var dev *DeviceInfo
+	err := s.db.View(func(tx *bolt.Tx) error {
+		data := tx.Bucket(bucketDevices).Get([]byte(hostname))
+		if data == nil {
+			return nil
+		}
+		return json.Unmarshal(data, &dev)
+	})
+	return dev, err
 }
 
 // itob encodes uint64 as 8-byte big-endian (for sequential bucket keys).

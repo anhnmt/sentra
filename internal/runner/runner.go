@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/anhnmt/sentra/internal/detectors/yara"
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/progress"
+	"github.com/anhnmt/sentra/internal/report"
 	"github.com/anhnmt/sentra/internal/store"
 	"github.com/anhnmt/sentra/internal/worker"
 )
@@ -165,6 +167,22 @@ func (r *Runner) Run(ctx context.Context) error {
 			"errors":   *errCount,
 			"duration": time.Since(start).Round(time.Second).String(),
 		})
+
+		// Auto-generate HTML report if OutputPath is set
+		if r.opts.OutputPath != "" {
+			// Close store first to release database lock
+			if r.store != nil {
+				r.store.Close()
+				r.store = nil
+			}
+			cmdLine := strings.Join(os.Args, " ")
+			gen := report.NewGenerator(r.opts.DBPath)
+			if err := gen.Generate(r.session.Record.ID, r.opts.OutputPath, cmdLine); err != nil {
+				log.Warn().Err(err).Msg("failed to generate report")
+			} else {
+				log.Info().Str("report", r.opts.OutputPath).Msg("HTML report generated")
+			}
+		}
 	}
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
