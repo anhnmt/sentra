@@ -7,6 +7,10 @@ import (
 	"github.com/panjf2000/ants/v2"
 )
 
+type Options struct {
+	Size int
+}
+
 type Pool struct {
 	pool *ants.Pool
 }
@@ -23,14 +27,11 @@ func New(opts *Options) (*Pool, error) {
 }
 
 func NewScanPool() (*Pool, error) {
-	size := runtime.NumCPU()
-	pool, err := ants.NewPool(size,
+	pool, err := ants.NewPool(runtime.NumCPU(),
 		ants.WithPreAlloc(true),
 		ants.WithNonblocking(false),
 		// Rust panic không propagate lên Go — cần recover để tránh crash
-		ants.WithPanicHandler(func(v interface{}) {
-			// log thay vì crash toàn bộ process
-		}),
+		ants.WithPanicHandler(func(v interface{}) {}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("new scan pool: %w", err)

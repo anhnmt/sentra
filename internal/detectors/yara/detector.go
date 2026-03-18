@@ -16,7 +16,7 @@ import (
 	"github.com/anhnmt/sentra/internal/core"
 )
 
-type yara interface {
+type yaraBackend interface {
 	compile(name string, content []byte) error
 	build() error
 	scan(ctx context.Context, target string) ([]core.MatchResult, error)
@@ -24,8 +24,13 @@ type yara interface {
 	close()
 }
 
+type backendResult struct {
+	matches []core.MatchResult
+	err     error
+}
+
 type YaraDetector struct {
-	backends    []yara
+	backends    []yaraBackend
 	absRulesDir string
 	wg          sync.WaitGroup
 }
@@ -36,44 +41,44 @@ func New(rulesDir string) (*YaraDetector, error) {
 		return nil, fmt.Errorf("resolve rules dir: %w", err)
 	}
 
-	yarax, err := newYarax()
+	yaraxB, err := newYarax()
 	if err != nil {
 		return nil, err
 	}
 
-	yarac, err := newYarac()
+	yaracB, err := newYarac()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := loadRules(rulesDir, yarax, yarac); err != nil {
+	if err := loadRules(rulesDir, yaraxB, yaracB); err != nil {
 		return nil, err
 	}
 
-	for _, b := range []yara{yarax, yarac} {
+	for _, b := range []yaraBackend{yaraxB, yaracB} {
 		if err := b.build(); err != nil {
 			return nil, err
 		}
 	}
 
 	return &YaraDetector{
-		backends:    []yara{yarax, yarac},
+		backends:    []yaraBackend{yaraxB, yaracB},
 		absRulesDir: absRulesDir,
 	}, nil
 }
 
-func loadRules(rulesDir string, yarax, yarac yara) error {
+func loadRules(rulesDir string, backends ...yaraBackend) error {
 	return fastwalk.Walk(&fastwalk.Config{Follow: false}, rulesDir,
 		func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || filepath.Ext(path) != ".yar" {
 				return err
 			}
-			return compileRule(path, yarax, yarac)
+			return compileRule(path, backends...)
 		},
 	)
 }
 
-func compileRule(path string, yarax, yarac yara) error {
+func compileRule(path string, backends ...yaraBackend) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
@@ -90,10 +95,15 @@ func compileRule(path string, yarax, yarac yara) error {
 	defer data.Unmap()
 
 	name := filepath.Base(path)
-	if err := yarax.compile(name, data); err == nil {
-		return nil
+	var lastErr error
+	for _, b := range backends {
+		if err := b.compile(name, data); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
 	}
-	return yarac.compile(name, data)
+	return lastErr
 }
 
 func (d *YaraDetector) Name() string { return "yara" }
@@ -112,17 +122,12 @@ func (d *YaraDetector) Scan(_ context.Context, target string, data []byte) ([]co
 }
 
 func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResult, error) {
-	type result struct {
-		matches []core.MatchResult
-		err     error
-	}
-
-	ch := make(chan result, len(d.backends))
+	ch := make(chan backendResult, len(d.backends))
 	var wg sync.WaitGroup
 
 	for _, b := range d.backends {
 		wg.Add(1)
-		go func(b yara) {
+		go func(b yaraBackend) {
 			defer wg.Done()
 			var m []core.MatchResult
 			var err error
@@ -131,18 +136,20 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 			} else {
 				m, err = b.scan(context.Background(), target)
 			}
-			ch <- result{m, err}
+			ch <- backendResult{m, err}
 		}(b)
 	}
 
 	wg.Wait()
 	close(ch)
 
-	var errCount int
-	// pre-alloc với cap = backends để tránh realloc trong trường hợp thường
-	all := make([]core.MatchResult, 0, len(d.backends))
-	// dedup theo (rule, namespace) — tránh 2 backend report cùng 1 match
-	seen := make(map[string]struct{}, len(d.backends))
+	return collectBackendResults(ch, len(d.backends))
+}
+
+func collectBackendResults(ch <-chan backendResult, total int) ([]core.MatchResult, error) {
+	seen := make(map[string]struct{}, total)
+	all := make([]core.MatchResult, 0, total)
+	errCount := 0
 
 	for r := range ch {
 		if r.err != nil {
@@ -150,8 +157,6 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 			continue
 		}
 		for _, m := range r.matches {
-			// key = ruleName + "|" + namespace — đủ unique, không cần target vì
-			// runBackends chỉ xử lý 1 file tại 1 thời điểm
 			key := m.RuleName + "|" + m.DetectorName
 			if _, dup := seen[key]; dup {
 				continue
@@ -161,7 +166,7 @@ func (d *YaraDetector) runBackends(target string, data []byte) ([]core.MatchResu
 		}
 	}
 
-	if errCount == len(d.backends) {
+	if errCount == total {
 		return nil, fmt.Errorf("yara: all backends failed")
 	}
 	return all, nil

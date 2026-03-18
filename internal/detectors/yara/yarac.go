@@ -37,54 +37,42 @@ func (d *yaracDetector) build() error {
 		return fmt.Errorf("yarac: build: %w", err)
 	}
 	d.rules = rules
-
-	// khởi tạo pool sau khi có rules
 	d.scannerPool = sync.Pool{
 		New: func() any {
-			scanner, err := yarac.NewScanner(d.rules)
+			s, err := yarac.NewScanner(d.rules)
 			if err != nil {
 				return nil
 			}
-			return scanner
+			return s
 		},
 	}
-
 	return nil
 }
 
-func (d *yaracDetector) scan(ctx context.Context, target string) ([]core.MatchResult, error) {
+func (d *yaracDetector) scan(_ context.Context, target string) ([]core.MatchResult, error) {
 	if d.rules == nil {
 		return nil, nil
 	}
-
 	var matches yarac.MatchRules
 	if err := d.rules.ScanFile(target, 0, 0, &matches); err != nil {
 		return nil, fmt.Errorf("yarac: scan %s: %w", target, err)
 	}
-
 	all := make([]core.MatchResult, 0, len(matches))
 	for _, m := range matches {
-		meta := make(map[string]interface{})
-		for _, kv := range m.Metas {
-			meta[kv.Identifier] = kv.Value
-		}
-
 		all = append(all, core.MatchResult{
 			DetectorName: "yarac",
 			RuleName:     m.Rule,
 			Target:       target,
-			Metadata:     meta,
+			Metadata:     yaracExtractMeta(m.Metas),
 		})
 	}
-
 	return all, nil
 }
 
-func (d *yaracDetector) scanMem(ctx context.Context, target string, data []byte) ([]core.MatchResult, error) {
+func (d *yaracDetector) scanMem(_ context.Context, target string, data []byte) ([]core.MatchResult, error) {
 	if d.rules == nil {
 		return nil, nil
 	}
-
 	scanner, ok := d.scannerPool.Get().(*yarac.Scanner)
 	if !ok || scanner == nil {
 		return nil, fmt.Errorf("yarac: failed to get scanner from pool")
@@ -93,11 +81,9 @@ func (d *yaracDetector) scanMem(ctx context.Context, target string, data []byte)
 
 	cb := &yaracCallback{target: target}
 	scanner.SetCallback(cb)
-
 	if err := scanner.ScanMem(data); err != nil {
 		return nil, fmt.Errorf("yarac: scanmem %s: %w", target, err)
 	}
-
 	return cb.results, nil
 }
 
@@ -112,23 +98,26 @@ func (d *yaracDetector) close() {
 	}
 }
 
+// yaracExtractMeta converts a yarac Meta slice to a generic map.
+func yaracExtractMeta(metas []yarac.Meta) map[string]any {
+	m := make(map[string]any, len(metas))
+	for _, kv := range metas {
+		m[kv.Identifier] = kv.Value
+	}
+	return m
+}
+
 type yaracCallback struct {
 	target  string
 	results []core.MatchResult
 }
 
 func (c *yaracCallback) RuleMatching(_ *yarac.ScanContext, r *yarac.Rule) (bool, error) {
-	meta := make(map[string]interface{})
-	for _, kv := range r.Metas() {
-		meta[kv.Identifier] = kv.Value
-	}
-
 	c.results = append(c.results, core.MatchResult{
 		DetectorName: "yarac",
 		RuleName:     r.Identifier(),
 		Target:       c.target,
-		Metadata:     meta,
+		Metadata:     yaracExtractMeta(r.Metas()),
 	})
-
-	return true, nil // true = tiếp tục scan
+	return true, nil
 }

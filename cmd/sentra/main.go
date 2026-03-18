@@ -13,10 +13,10 @@ import (
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/runner"
 	"github.com/anhnmt/sentra/internal/sysinfo"
-	"github.com/anhnmt/sentra/internal/util"
+	"github.com/anhnmt/sentra/internal/updater"
 )
 
-const BANNER = `
+const banner = `
   _________              __                 
  /   _____/ ____   _____/  |_____________   
  \_____  \_/ __ \ /    \   __\_  __ \__  \  
@@ -26,9 +26,8 @@ const BANNER = `
 `
 
 func init() {
-	fmt.Printf("%s\n", BANNER)
+	fmt.Printf("%s\n", banner)
 	logger.Init()
-
 }
 
 func main() {
@@ -37,38 +36,34 @@ func main() {
 		log.Warn().Err(err).Msg("error parse")
 	}
 
-	_, err = sysinfo.Collect()
-	if err != nil {
+	if _, err := sysinfo.Collect(); err != nil {
 		log.Warn().Err(err).Msg("could not collect system info")
 	}
 
 	if opts.UpdateSignatures {
-		err := util.UpdateSignatures()
-		if err != nil {
+		if err := updater.UpdateSignatures(); err != nil {
 			log.Fatal().Msgf("UpdateSignatures error: %v", err)
-			return
 		}
-		log.Info().Msgf("Shutting down...")
-		os.Exit(1)
+		log.Info().Msg("Shutting down...")
+		os.Exit(0)
 	}
 
-	runner, err := runner.New(opts)
+	r, err := runner.New(opts)
 	if err != nil {
-		log.Info().Msgf("Failed to create runner: %v", err)
+		log.Fatal().Msgf("Failed to create runner: %v", err)
 	}
-	defer runner.Close()
+	defer r.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	go func() {
 		defer cancel()
-		if err := runner.Run(ctx); err != nil {
+		if err := r.Run(ctx); err != nil {
 			log.Fatal().Msgf("Runner error: %v", err)
 		}
 	}()
 
-	// Graceful shutdown
 	<-ctx.Done()
-	log.Info().Msgf("Shutting down...")
+	log.Info().Msg("Shutting down...")
 }

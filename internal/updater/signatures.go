@@ -1,4 +1,4 @@
-package util
+package updater
 
 import (
 	"archive/zip"

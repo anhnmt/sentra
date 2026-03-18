@@ -4,16 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/charlievieth/fastwalk"
-	"github.com/edsrzf/mmap-go"
 	"github.com/rs/zerolog/log"
 
 	"github.com/anhnmt/sentra/internal/core"
@@ -23,17 +18,17 @@ import (
 	"github.com/anhnmt/sentra/internal/worker"
 )
 
-const (
-	mmapThreshold = 512 * 1024 // 512KB
-	batchSize     = 16
-)
-
 type Runner struct {
 	opts     *Options
 	detector *yara.YaraDetector
 	ioPool   *worker.Pool
 	scanPool *worker.Pool
 	skipDirs map[string]struct{}
+}
+
+type scanResult struct {
+	matches []core.MatchResult
+	err     error
 }
 
 func New(opts *Options) (*Runner, error) {
@@ -66,17 +61,10 @@ func New(opts *Options) (*Runner, error) {
 	}, nil
 }
 
-type scanItem struct {
-	path    string
-	data    []byte
-	cleanup func()
-}
-
 func (r *Runner) Run(ctx context.Context) error {
 	if r.opts.Target == "" {
 		return fmt.Errorf("--target is required")
 	}
-
 	if abs, err := filepath.Abs(r.opts.Target); err == nil {
 		r.opts.Target = abs
 	}
@@ -89,29 +77,44 @@ func (r *Runner) Run(ctx context.Context) error {
 		Strs("skip_dirs", r.opts.SkipDirs).
 		Msg("scan starting")
 
-	bar := progress.New(progress.Options{
-		Workers: r.opts.Workers,
-	})
+	bar := progress.New(progress.Options{Workers: r.opts.Workers})
 	logger.InitWithWriter(bar.Writer)
+	start := time.Now()
 
-	type result struct {
-		matches []core.MatchResult
-		err     error
+	ch := make(chan scanResult, r.opts.Workers)
+	var wg sync.WaitGroup
+
+	errs, errCount, done := r.startConsumer(ch, bar)
+
+	var walkErr error
+	go func() {
+		walkErr = r.walkFiles(ctx, ch, &wg, bar)
+		wg.Wait()
+		close(ch)
+	}()
+
+	<-done
+	bar.Done()
+	logger.InitWithWriter(bar.Writer)
+	r.logScanSummary(ctx, bar, start, *errCount)
+
+	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
+		return fmt.Errorf("walk %s: %w", r.opts.Target, walkErr)
 	}
+	if len(*errs) > 0 && !errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Errorf("scan errors: %v", *errs)
+	}
+	return nil
+}
 
-	ch := make(chan result, r.opts.Workers)
-
+func (r *Runner) startConsumer(ch <-chan scanResult, bar *progress.Bar) (*[]error, *int64, <-chan struct{}) {
 	var (
-		wg         sync.WaitGroup
 		mu         sync.Mutex
 		errs       []error
 		errorCount int64
 		done       = make(chan struct{})
 	)
 
-	start := time.Now()
-
-	// consumer
 	go func() {
 		defer close(done)
 		for res := range ch {
@@ -136,157 +139,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}()
 
-	submitBatch := func(batch []scanItem) {
-		if len(batch) == 0 {
-			return
-		}
-		wg.Add(1)
-		items := batch
-		if err := r.scanPool.Submit(func() {
-			defer wg.Done()
-			for _, item := range items {
-				matches, err := r.detector.Scan(context.Background(), item.path, item.data)
-				item.cleanup()
-				ch <- result{matches, err}
-			}
-		}); err != nil {
-			wg.Done()
-			for _, item := range items {
-				item.cleanup()
-				ch <- result{nil, fmt.Errorf("submit scan %s: %w", item.path, err)}
-			}
-		}
-	}
+	return &errs, &errorCount, done
+}
 
-	baseDepth := strings.Count(r.opts.Target, string(os.PathSeparator))
-
-	var walkErr error
-	go func() {
-		var (
-			batchMu sync.Mutex
-			batch   []scanItem
-		)
-
-		flushBatch := func() {
-			batchMu.Lock()
-			cur := batch
-			batch = nil
-			batchMu.Unlock()
-			submitBatch(cur)
-		}
-
-		walkErr = fastwalk.Walk(&fastwalk.Config{Follow: false}, r.opts.Target,
-			func(path string, d fs.DirEntry, err error) error {
-				if err != nil {
-					if errors.Is(err, os.ErrPermission) {
-						return nil
-					}
-					return err
-				}
-
-				if d.IsDir() {
-					if path == r.opts.RulesDir {
-						return fastwalk.SkipDir
-					}
-					if _, skip := r.skipDirs[filepath.Base(path)]; skip {
-						return fastwalk.SkipDir
-					}
-					if r.opts.MaxDepth > 0 {
-						depth := strings.Count(path, string(os.PathSeparator)) - baseDepth
-						if depth >= r.opts.MaxDepth {
-							return fastwalk.SkipDir
-						}
-					}
-					return nil
-				}
-
-				if d.Type() != 0 {
-					return nil
-				}
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-
-				info, err := d.Info()
-				if err != nil {
-					return nil
-				}
-				if !yara.IsEligibleInfo(info, int64(r.opts.MinFileSize), int64(r.opts.MaxFileSize)) {
-					bar.IncrementSkip()
-					return nil
-				}
-				if r.detector.IsRulesPath(path) {
-					return nil
-				}
-
-				bar.IncrementFile()
-
-				isMmap := info.Size() >= mmapThreshold
-
-				wg.Add(1)
-				if err := r.ioPool.Submit(func() {
-					data, cleanup, err := readFile(path)
-					if err != nil {
-						wg.Done()
-						ch <- result{nil, err}
-						return
-					}
-					if data == nil {
-						cleanup()
-						wg.Done()
-						return
-					}
-					if yara.HasSkipMagic(data) {
-						cleanup()
-						wg.Done()
-						bar.IncrementSkip()
-						return
-					}
-
-					if isMmap {
-						if err := r.scanPool.Submit(func() {
-							defer wg.Done()
-							defer cleanup()
-							matches, err := r.detector.Scan(context.Background(), path, data)
-							ch <- result{matches, err}
-						}); err != nil {
-							cleanup()
-							wg.Done()
-							ch <- result{nil, fmt.Errorf("submit scan %s: %w", path, err)}
-						}
-						return
-					}
-
-					batchMu.Lock()
-					batch = append(batch, scanItem{path: path, data: data, cleanup: cleanup})
-					full := len(batch) >= batchSize
-					cur := batch
-					if full {
-						batch = nil
-					}
-					batchMu.Unlock()
-
-					wg.Done()
-					if full {
-						submitBatch(cur)
-					}
-				}); err != nil {
-					wg.Done()
-					return fmt.Errorf("submit io %s: %w", path, err)
-				}
-				return nil
-			},
-		)
-
-		flushBatch()
-		wg.Wait()
-		close(ch)
-	}()
-
-	<-done
-	bar.Done()
-	logger.InitWithWriter(bar.Writer)
-
+func (r *Runner) logScanSummary(ctx context.Context, bar *progress.Bar, start time.Time, errorCount int64) {
+	dur := time.Since(start).Round(time.Second).String()
 	canceled := errors.Is(ctx.Err(), context.Canceled)
 
 	if canceled {
@@ -294,25 +151,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			Int64("scanned", bar.Files()).
 			Int64("skipped", bar.Skipped()).
 			Int64("matches", bar.Matches()).
-			Str("duration", time.Since(start).Round(time.Second).String()).
+			Str("duration", dur).
 			Msg("scan canceled")
-	} else {
-		log.Info().
-			Int64("scanned", bar.Files()).
-			Int64("skipped", bar.Skipped()).
-			Int64("matches", bar.Matches()).
-			Int64("errors", errorCount).
-			Str("duration", time.Since(start).Round(time.Second).String()).
-			Msg("scan complete")
+		return
 	}
 
-	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
-		return fmt.Errorf("walk %s: %w", r.opts.Target, walkErr)
-	}
-	if len(errs) > 0 && !canceled {
-		return fmt.Errorf("scan errors: %v", errs)
-	}
-	return nil
+	log.Info().
+		Int64("scanned", bar.Files()).
+		Int64("skipped", bar.Skipped()).
+		Int64("matches", bar.Matches()).
+		Int64("errors", errorCount).
+		Str("duration", dur).
+		Msg("scan complete")
 }
 
 func (r *Runner) Close() {
@@ -320,50 +170,4 @@ func (r *Runner) Close() {
 	r.ioPool.Close()
 	r.detector.Close()
 	log.Info().Msg("Goodbye!")
-}
-
-func readFile(path string) ([]byte, func(), error) {
-	noop := func() {}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return nil, noop, nil
-		}
-		return nil, noop, fmt.Errorf("stat %s: %w", path, err)
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return nil, noop, nil
-		}
-		return nil, noop, fmt.Errorf("open %s: %w", path, err)
-	}
-
-	if info.Size() < mmapThreshold {
-		defer f.Close()
-		data, err := io.ReadAll(f)
-		if err != nil {
-			return nil, noop, fmt.Errorf("read %s: %w", path, err)
-		}
-		return data, noop, nil
-	}
-
-	mapped, err := mmap.Map(f, mmap.RDONLY, 0)
-	if err != nil {
-		f.Close()
-		f2, err2 := os.Open(path)
-		if err2 != nil {
-			return nil, noop, fmt.Errorf("open %s: %w", path, err2)
-		}
-		defer f2.Close()
-		data, err2 := io.ReadAll(f2)
-		if err2 != nil {
-			return nil, noop, fmt.Errorf("read %s: %w", path, err2)
-		}
-		return data, noop, nil
-	}
-
-	return mapped, func() { mapped.Unmap(); f.Close() }, nil
 }
