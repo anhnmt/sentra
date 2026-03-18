@@ -57,4 +57,5 @@ samples/
 sentra
 sentra*
 .gitnexus
-report.html
+report*.html
+sentra*.db

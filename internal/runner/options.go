@@ -52,7 +52,7 @@ func ParseOptions() (*Options, error) {
 	)
 
 	fs.CreateGroup("report", "Report",
-		fs.StringVar(&opts.OutputPath, "output", "report.html", "output HTML report path"),
+		fs.StringVar(&opts.OutputPath, "output", ".", "output HTML report path"),
 		fs.StringVar(&opts.ScanID, "scan-id", "", "scan ID to generate report (latest if empty)"),
 	)
 

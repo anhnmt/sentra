@@ -105,9 +105,30 @@ func (r *Runner) Run(ctx context.Context) error {
 		Strs("skip_dirs", r.opts.SkipDirs).
 		Msg("scan starting")
 
+	// Generate scan ID and DB path with timestamp
+	scanID := time.Now().Format("20060102150405")
+
+	// If output is requested, generate DB and report paths with scan ID
+	if r.opts.OutputPath != "" {
+		dbPath := fmt.Sprintf("sentra-%s.db", scanID)
+		r.opts.DBPath = dbPath
+
+		// Close existing store if any
+		if r.store != nil {
+			r.store.Close()
+		}
+
+		// Open new store with scan ID in path
+		var err error
+		r.store, err = store.Open(dbPath)
+		if err != nil {
+			log.Warn().Err(err).Msgf("failed to open db %s, running without history", dbPath)
+			r.store = nil
+		}
+	}
+
 	// Begin scan session if store is available
 	if r.store != nil {
-		scanID := time.Now().Format("20060102150405")
 		rec := store.ScanRecord{
 			ID:        scanID,
 			StartedAt: time.Now(),
@@ -175,12 +196,20 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.store.Close()
 				r.store = nil
 			}
+
+			// Generate output path with scan ID
+			outputPath := r.opts.OutputPath
+			if !strings.HasSuffix(outputPath, ".html") {
+				// Assume it's a directory or prefix, append scan ID
+				outputPath = fmt.Sprintf("%s/report-%s.html", outputPath, r.session.Record.ID)
+			}
+
 			cmdLine := strings.Join(os.Args, " ")
 			gen := report.NewGenerator(r.opts.DBPath)
-			if err := gen.Generate(r.session.Record.ID, r.opts.OutputPath, cmdLine); err != nil {
+			if err := gen.Generate(r.session.Record.ID, outputPath, cmdLine); err != nil {
 				log.Warn().Err(err).Msg("failed to generate report")
 			} else {
-				log.Info().Str("report", r.opts.OutputPath).Msg("HTML report generated")
+				log.Info().Str("report", outputPath).Msg("HTML report generated")
 			}
 		}
 	}
