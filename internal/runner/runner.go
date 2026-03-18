@@ -28,6 +28,7 @@ type Runner struct {
 	scanPool *worker.Pool
 	skipDirs map[string]struct{}
 	store    *store.Store
+	session  *store.ScanSession
 }
 
 type scanResult struct {
@@ -102,6 +103,31 @@ func (r *Runner) Run(ctx context.Context) error {
 		Strs("skip_dirs", r.opts.SkipDirs).
 		Msg("scan starting")
 
+	// Begin scan session if store is available
+	if r.store != nil {
+		scanID := time.Now().Format("20060102150405")
+		rec := store.ScanRecord{
+			ID:        scanID,
+			StartedAt: time.Now(),
+			Target:    r.opts.Target,
+			RulesDir:  r.opts.RulesDir,
+			Workers:   r.opts.Workers,
+			Status:    "running",
+		}
+		session, err := r.store.BeginScan(rec)
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to begin scan session")
+		} else {
+			r.session = session
+			// Log scan start
+			session.RecordLog(store.LevelInfo, "scan started", map[string]any{
+				"target":    r.opts.Target,
+				"rules_dir": r.opts.RulesDir,
+				"workers":   r.opts.Workers,
+			})
+		}
+	}
+
 	bar := progress.New(progress.Options{Workers: r.opts.Workers})
 	logger.InitWithWriter(bar.Writer)
 	start := time.Now()
@@ -121,12 +147,30 @@ func (r *Runner) Run(ctx context.Context) error {
 	<-done
 	bar.Done()
 	logger.InitWithWriter(bar.Writer)
+
+	canceled := errors.Is(ctx.Err(), context.Canceled)
 	r.logScanSummary(ctx, bar, start, *errCount)
+
+	// Finish scan session
+	if r.session != nil {
+		status := "completed"
+		if canceled {
+			status = "canceled"
+		}
+		r.session.Finish(bar.Files(), bar.Skipped(), bar.Matches(), *errCount, status)
+		r.session.RecordLog(store.LevelInfo, "scan "+status, map[string]any{
+			"scanned":  bar.Files(),
+			"skipped":  bar.Skipped(),
+			"matches":  bar.Matches(),
+			"errors":   *errCount,
+			"duration": time.Since(start).Round(time.Second).String(),
+		})
+	}
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 		return fmt.Errorf("walk %s: %w", r.opts.Target, walkErr)
 	}
-	if len(*errs) > 0 && !errors.Is(ctx.Err(), context.Canceled) {
+	if len(*errs) > 0 && !canceled {
 		return fmt.Errorf("scan errors: %v", *errs)
 	}
 	return nil
@@ -149,6 +193,12 @@ func (r *Runner) startConsumer(ch <-chan scanResult, bar *progress.Bar) (*[]erro
 					mu.Lock()
 					errs = append(errs, res.err)
 					mu.Unlock()
+					// Record error to DB
+					if r.session != nil {
+						r.session.RecordLog(store.LevelError, "scan error", map[string]any{
+							"error": res.err.Error(),
+						})
+					}
 				}
 				continue
 			}
@@ -160,6 +210,25 @@ func (r *Runner) startConsumer(ch <-chan scanResult, bar *progress.Bar) (*[]erro
 					Str("file", match.Target).
 					Fields(match.Metadata).
 					Msg("match detected")
+
+				// Record match to DB
+				if r.session != nil {
+					rec := store.MatchRecord{
+						ScanID:       r.session.Record.ID,
+						DetectorName: match.DetectorName,
+						RuleName:     match.RuleName,
+						Target:       match.Target,
+						Metadata:     match.Metadata,
+						DetectedAt:   time.Now(),
+					}
+					r.session.RecordMatch(rec)
+					// Also record as log
+					r.session.RecordLog(store.LevelWarn, "match detected", map[string]any{
+						"detector": match.DetectorName,
+						"rule":     match.RuleName,
+						"file":     match.Target,
+					})
+				}
 			}
 		}
 	}()

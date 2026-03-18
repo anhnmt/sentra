@@ -12,6 +12,7 @@ var (
 	bucketDevices = []byte("devices")
 	bucketScans   = []byte("scans")
 	bucketMatches = []byte("matches")
+	bucketLogs    = []byte("logs")
 )
 
 // Store wraps a bbolt database for persistent scan history.
@@ -35,7 +36,7 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) initBuckets() error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketDevices, bucketScans, bucketMatches} {
+		for _, name := range [][]byte{bucketDevices, bucketScans, bucketMatches, bucketLogs} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("create bucket %s: %w", name, err)
 			}
