@@ -15,8 +15,11 @@ import (
 	"github.com/anhnmt/sentra/internal/detectors/yara"
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/progress"
+	"github.com/anhnmt/sentra/internal/store"
 	"github.com/anhnmt/sentra/internal/worker"
 )
+
+const defaultDBPath = "sentra.db"
 
 type Runner struct {
 	opts     *Options
@@ -24,6 +27,7 @@ type Runner struct {
 	ioPool   *worker.Pool
 	scanPool *worker.Pool
 	skipDirs map[string]struct{}
+	store    *store.Store
 }
 
 type scanResult struct {
@@ -31,7 +35,22 @@ type scanResult struct {
 	err     error
 }
 
+// New creates a new Runner with optional bbolt store.
 func New(opts *Options) (*Runner, error) {
+	dbPath := opts.DBPath
+	if dbPath == "" {
+		dbPath = defaultDBPath
+	}
+
+	var db *store.Store
+	if dbPath != "" && dbPath != ":memory:" {
+		var err error
+		db, err = store.Open(dbPath)
+		if err != nil {
+			log.Warn().Err(err).Msgf("failed to open db, running without history")
+		}
+	}
+
 	detector, err := yara.New(opts.RulesDir)
 	if err != nil {
 		return nil, fmt.Errorf("init yara: %w", err)
@@ -58,7 +77,13 @@ func New(opts *Options) (*Runner, error) {
 		ioPool:   ioPool,
 		scanPool: scanPool,
 		skipDirs: skipDirs,
+		store:    db,
 	}, nil
+}
+
+// Store returns the underlying bbolt store (may be nil).
+func (r *Runner) Store() *store.Store {
+	return r.store
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -169,5 +194,8 @@ func (r *Runner) Close() {
 	r.scanPool.Close()
 	r.ioPool.Close()
 	r.detector.Close()
+	if r.store != nil {
+		r.store.Close()
+	}
 	log.Info().Msg("Goodbye!")
 }

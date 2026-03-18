@@ -12,6 +12,7 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/vbauerster/mpb/v8 v8.12.0
+	go.etcd.io/bbolt v1.4.3
 	go.uber.org/automaxprocs v1.6.0
 )
 

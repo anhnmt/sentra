@@ -20,10 +20,13 @@ type Options struct {
 	MaxDepth         int
 	MinFileSize      int
 	MaxFileSize      int
+	DBPath           string
 }
 
 func ParseOptions() (*Options, error) {
-	opts := &Options{}
+	opts := &Options{
+		DBPath: "sentra.db",
+	}
 
 	fs := goflags.NewFlagSet()
 	fs.SetDescription("Sentra - threat intelligence scanner")
@@ -40,6 +43,10 @@ func ParseOptions() (*Options, error) {
 
 	fs.CreateGroup("update", "Util",
 		fs.BoolVar(&opts.UpdateSignatures, "update-signatures", false, "update latest signatures"),
+	)
+
+	fs.CreateGroup("store", "Database",
+		fs.StringVar(&opts.DBPath, "db", opts.DBPath, "path to bbolt database file"),
 	)
 
 	return opts, fs.Parse()

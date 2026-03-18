@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	_ "go.uber.org/automaxprocs"
 
 	"github.com/anhnmt/sentra/internal/logger"
 	"github.com/anhnmt/sentra/internal/runner"
+	"github.com/anhnmt/sentra/internal/store"
 	"github.com/anhnmt/sentra/internal/sysinfo"
 	"github.com/anhnmt/sentra/internal/updater"
 )
@@ -36,7 +38,9 @@ func main() {
 		log.Warn().Err(err).Msg("error parse")
 	}
 
-	if _, err := sysinfo.Collect(); err != nil {
+	// Collect system info once for logging and storage
+	sysInfo, err := sysinfo.Collect()
+	if err != nil {
 		log.Warn().Err(err).Msg("could not collect system info")
 	}
 
@@ -53,6 +57,23 @@ func main() {
 		log.Fatal().Msgf("Failed to create runner: %v", err)
 	}
 	defer r.Close()
+
+	// Save device info to store if available
+	if s := r.Store(); s != nil && sysInfo != nil {
+		hostname, _ := os.Hostname()
+		devInfo := store.DeviceInfo{
+			Hostname:    hostname,
+			OS:          sysInfo.OS,
+			Arch:        sysInfo.Arch,
+			CPUModel:    sysInfo.CPUModel,
+			CPUCores:    sysInfo.CPUCores,
+			TotalRAMMB:  sysInfo.TotalRAMMB,
+			CollectedAt: time.Now(),
+		}
+		if err := s.SaveDevice(devInfo); err != nil {
+			log.Warn().Err(err).Msg("failed to save device info")
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
