@@ -74,18 +74,6 @@ type MatchedString struct {
 
 // LoadTemplate returns the parsed HTML template.
 func LoadTemplate() (*template.Template, error) {
-	funcs := template.FuncMap{
-		"upper": func(s string) string {
-			if s == "" {
-				return ""
-			}
-			return string(s[0]-32) + s[1:]
-		},
-	}
-	tmpl := template.Must(template.New("report").Funcs(funcs).Parse(Template()))
+	tmpl := template.Must(template.New("report").Parse(Template()))
 	return tmpl, nil
-}
-
-func Template() string {
-	return Header() + "\n" + Navbar() + "\n" + SummarySection() + "\n" + SystemInfoSection() + "\n" + FindingsSection() + "\n" + Footer()
 }
