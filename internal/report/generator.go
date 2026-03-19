@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/anhnmt/sentra/internal/store"
@@ -211,23 +212,43 @@ func (g *Generator) buildFindings(matches []store.MatchRecord) []Finding {
 }
 
 // inferSeverity determines severity from match metadata.
+// Always returns one of: "alert", "warning", "notice".
 func (g *Generator) inferSeverity(m store.MatchRecord) string {
-	if m.Metadata == nil {
-		return "warning"
-	}
-	if v, ok := m.Metadata["severity"].(string); ok {
-		return v
-	}
-	if v, ok := m.Metadata["score"].(float64); ok {
-		if v >= 80 {
-			return "alert"
+	if m.Metadata != nil {
+		if v, ok := m.Metadata["severity"].(string); ok {
+			return normalizeSeverity(v)
 		}
-		if v >= 60 {
-			return "warning"
+		if v, ok := m.Metadata["score"].(float64); ok {
+			return severityFromScore(v)
 		}
-		return "notice"
 	}
 	return "warning"
+}
+
+// normalizeSeverity maps arbitrary severity strings to alert/warning/notice.
+func normalizeSeverity(s string) string {
+	switch s {
+	case "alert", "critical", "high":
+		return "alert"
+	case "warning", "medium", "warn":
+		return "warning"
+	case "notice", "low", "info", "informational":
+		return "notice"
+	default:
+		return "warning"
+	}
+}
+
+// severityFromScore maps a numeric score to alert/warning/notice.
+func severityFromScore(score float64) string {
+	switch {
+	case score >= 80:
+		return "alert"
+	case score >= 60:
+		return "warning"
+	default:
+		return "notice"
+	}
 }
 
 // inferScore extracts score from metadata.
@@ -303,16 +324,7 @@ func (g *Generator) extractAttackTags(v []any) []string {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
-}
-
-func containsAt(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }
 
 // GetScanList returns all scan IDs from the database.
