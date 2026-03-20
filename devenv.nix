@@ -72,7 +72,6 @@
     GOMAXPROCS=$(nproc) \
       go build \
         -trimpath \
-        -ldflags "-extldflags '-static'" \
         -buildvcs=false \
         -o sentra-macos-arm64 \
         ./cmd/sentra
